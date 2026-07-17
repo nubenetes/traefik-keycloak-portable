@@ -49,12 +49,14 @@ set of **feature flags** with fail-fast validation of impossible combinations.
 7. [Configuration](#7-configuration)
 8. [Step-by-step install](#8-step-by-step-install)
 9. [Feature-flag reference](#9-feature-flag-reference)
-10. [Air-gapped / disconnected](#10-air-gapped--disconnected)
-11. [Upgrade](#11-upgrade)
-12. [Decommission](#12-decommission)
-13. [Operations & troubleshooting](#13-operations--troubleshooting)
-14. [GitOps with ArgoCD](#14-gitops-with-argocd)
-15. [Contributing & license](#15-contributing--license)
+10. [Secrets management](#10-secrets-management)
+11. [CNI & CSI](#11-cni--csi)
+12. [Air-gapped / disconnected](#12-air-gapped--disconnected)
+13. [Upgrade](#13-upgrade)
+14. [Decommission](#14-decommission)
+15. [Operations & troubleshooting](#15-operations--troubleshooting)
+16. [GitOps with ArgoCD](#16-gitops-with-argocd)
+17. [Contributing & license](#17-contributing--license)
 
 ---
 
@@ -191,15 +193,19 @@ flowchart TB
 
 What is typical, merely possible, or best avoided per platform:
 
-| Platform ↓ / LB → | `metallb` | `nsx-alb` | `kube-vip` | `generic` |
-|---|---|---|---|---|
-| **openshift** | ✅ typical (MetalLB Operator) | ⚪ if Avi/AKO present | ⚪ possible | ⚪ external/physical LB |
-| **rke2** | ✅ typical | ⚪ possible | ⚪ possible | ⚪ possible |
-| **k3s** | ✅ typical | ⚪ possible | ⚪ possible | ⚪ built-in ServiceLB (klipper) |
-| **kubeadm / generic** | ✅ typical | ⚪ possible | ⚪ possible | ⚪ possible |
-| **Tanzu / TKG (vSphere)** | ⚠️ L2 often blocked by vSphere port-group security — use BGP | ✅ typical (NSX ALB + AKO) | ✅ typical (bare-metal/edge) | ⚪ possible |
+| Platform ↓ / LB → | `metallb` | `nsx-alb` | `kube-vip` | `cilium` | `generic` |
+|---|---|---|---|---|---|
+| **openshift** | ✅ typical (MetalLB Operator) | ⚪ if Avi/AKO present | ⚪ possible | ⚪ if Cilium CNI | ⚪ external/physical LB |
+| **rke2** | ✅ typical | ⚪ possible | ⚪ possible | ⚪ if Cilium CNI | ⚪ possible |
+| **k3s** | ✅ typical | ⚪ possible | ⚪ possible | ⚪ if Cilium CNI | ⚪ built-in ServiceLB (klipper) |
+| **kubeadm / generic** | ✅ typical | ⚪ possible | ⚪ possible | ⚪ if Cilium CNI | ⚪ possible |
+| **Tanzu / TKG (vSphere)** | ⚠️ L2 often blocked by vSphere port-group security — use BGP | ✅ typical (NSX ALB + AKO) | ✅ typical (bare-metal/edge) | ⚪ if Cilium CNI | ⚪ possible |
 
 ✅ typical · ⚪ possible (supported, less common) · ⚠️ caveat.
+
+`cilium` fits when Cilium is already the CNI and does the LoadBalancer (LB-IPAM /
+L2 announcements / BGP), so no MetalLB is needed — request an IP with the
+`lbipam.cilium.io/ips` annotation on the Service.
 
 > **vSphere caveat** applies to **any** L2 mode (MetalLB L2, kube-vip ARP)
 > regardless of platform — including OpenShift-on-vSphere: the port group must
@@ -244,6 +250,8 @@ helm/traefik-keycloak/          Umbrella chart
     ingressroutes.yaml            /oauth2/* and /dashboard routes
     trusted-ca-configmap.yaml     CA trust (openshift-injector / configmap)
     oauth2-proxy-secret.yaml      rendered only when secret.mode=inline
+    external-secrets.yaml         ESO SecretStore + ExternalSecret (secret.mode=external-secrets)
+    networkpolicy.yaml            NetworkPolicies (networkPolicy.enabled)
     validation.yaml + _validate.tpl   fail-fast combo validation
     _helpers.tpl
   README.md                     Chart-level reference (every flag)
@@ -252,7 +260,8 @@ argocd/                         GitOps: AppProject + single Application
   apps/traefik-keycloak.yaml    multi-source (vendored chart + $values preset)
   project.yaml
   README.md
-docs/                           tls-secret.md, air-gapped.md
+docs/                           tls-secret.md, air-gapped.md,
+                                external-secrets.md, network-policies.md
 keycloak/keycloak-client-setup.md
 metallb/ipaddresspool.example.yaml
 secrets/oauth2-proxy-secret.example.yaml
@@ -337,10 +346,11 @@ Every flag lives in [`helm/traefik-keycloak/values.yaml`](helm/traefik-keycloak/
 | Flag | Values | What it does |
 |---|---|---|
 | `platform` | `generic` `openshift` `rke2` `k3s` `kubeadm` | Distribution profile; drives pod-security expectations. Validated. |
-| `loadBalancer.backend` | `metallb` `nsx-alb` `kube-vip` `generic` | Documents/validates the LB. Annotations go in `traefik.service.annotations`. |
+| `loadBalancer.backend` | `metallb` `nsx-alb` `kube-vip` `cilium` `generic` | Documents/validates the LB. Annotations go in `traefik.service.annotations`. |
 | `image.registry` | `""` or host | Air-gap registry prefix for the oauth2-proxy image (`traefik.image.registry` for Traefik). |
 | `caTrust.mode` | `none` `openshift-injector` `configmap` `insecure` | How oauth2-proxy trusts the Keycloak TLS cert. |
-| `secret.mode` | `external` `inline` | Reference a pre-created Secret (default) or render one from values (dev). |
+| `secret.mode` | `external` `inline` `external-secrets` | Reference a pre-created Secret (default), render one from values (dev), or pull it from a backend via ESO ([§10](#10-secrets-management)). |
+| `networkPolicy.enabled` | `false` `true` | Render minimal NetworkPolicies for default-deny clusters ([§11](#11-cni--csi)). |
 | `dashboard.*` `keycloak.*` `oauth2Proxy.*` | — | Hostnames, OIDC issuer, role gate, replicas, resources. |
 
 ### Fail-fast validation
@@ -353,9 +363,106 @@ impossible combination:
 - `platform=openshift` ⇒ `runAsUser` must be null; `platform≠openshift` ⇒ a
   non-root `runAsUser` must be set.
 - `secret.mode=inline` ⇒ `clientSecret` and `cookieSecret` must be set.
+- `secret.mode=external-secrets` ⇒ a `SecretStore` ref (and, when the chart
+  creates the store, a Vault `server`) must be set.
 - `dashboard.host` and `keycloak.issuerUrl` must be non-empty.
 
-## 10. Air-gapped / disconnected
+## 10. Secrets management
+
+oauth2-proxy needs three values — `OAUTH2_PROXY_CLIENT_ID`, `_CLIENT_SECRET`,
+`_COOKIE_SECRET` — in a Secret named by `secret.name`. How that Secret comes to
+exist is the `secret.mode` axis:
+
+| `secret.mode` | Who creates the Secret | Use when |
+|---|---|---|
+| `external` (default) | You, out-of-band (manually, or **Sealed Secrets**) | GitOps and you seal secrets, or you apply them by hand |
+| `inline` | The chart, from `secret.clientSecret` / `secret.cookieSecret` | Dev / demo only — keep the values out of public git |
+| `external-secrets` | The **External Secrets Operator**, pulled from a backend (e.g. **HashiCorp Vault**) | GitOps with a real secrets backend — nothing sensitive in git |
+
+`external-secrets` mode renders a `SecretStore` (→ Vault, Kubernetes auth) and an
+`ExternalSecret` that fills `oauth2-proxy-secret`; the oauth2-proxy Deployment
+consumes it unchanged. Full setup (Vault KV, policy, role, self-signed CA) is in
+**[`docs/external-secrets.md`](docs/external-secrets.md)**.
+
+<details>
+<summary><b>Diagram — secret modes and the ESO/Vault flow</b> (click to expand)</summary>
+
+```mermaid
+flowchart LR
+    subgraph MODES["secret.mode"]
+      direction TB
+      EXT["external<br/>you create it (Sealed Secrets / manual)"]
+      INL["inline<br/>chart renders from values (dev)"]
+      ES["external-secrets<br/>ESO pulls from a backend"]
+    end
+    VAULT[("HashiCorp Vault<br/>KV v2")]
+    ESO["External Secrets Operator<br/>SecretStore + ExternalSecret"]
+    SECRET["Secret: oauth2-proxy-secret<br/>CLIENT_ID · CLIENT_SECRET · COOKIE_SECRET"]
+    O2P["oauth2-proxy"]
+    EXT --> SECRET
+    INL --> SECRET
+    ES --> ESO
+    VAULT -->|"Kubernetes auth"| ESO
+    ESO -->|"creates / refreshes"| SECRET
+    SECRET --> O2P
+    classDef mode fill:#DDE8FF,stroke:#3B6FD4,color:#111;
+    classDef vault fill:#FFF3CD,stroke:#E0A800,color:#111;
+    classDef eso fill:#D7F5DD,stroke:#2E9E5B,color:#111;
+    class EXT,INL,ES mode;
+    class VAULT vault;
+    class ESO eso;
+```
+
+</details>
+
+## 11. CNI & CSI
+
+Two questions come up for on-prem clusters: does the **CNI** (Calico, Cilium,
+OVN-Kubernetes, Antrea, flannel…) or the **CSI** (storage) choice affect this
+deployment? Short answer: **CSI not at all; CNI only through NetworkPolicy**.
+
+### CSI / storage — not applicable
+
+The workload is **stateless**: no PersistentVolumeClaims, no `StorageClass`
+dependency. Traefik runs with `readOnlyRootFilesystem` and an `emptyDir`; TLS
+comes from a pre-created Secret (no ACME/`acme.json` to persist); oauth2-proxy
+sessions are cookie-based. So the CSI driver and storage classes are irrelevant
+here. (Storage only re-enters if you self-host Keycloak or Vault in-cluster —
+those are external dependencies, out of scope for this chart.)
+
+### CNI — the workload is agnostic, except NetworkPolicy
+
+Pods are standard and run on any CNI. The one place the CNI matters is
+**NetworkPolicy enforcement**: on a **default-deny** cluster (common with Calico
+or Cilium in secure / air-gapped environments) the required flows would be
+blocked — Traefik→oauth2-proxy (ForwardAuth), oauth2-proxy→Keycloak (OIDC), and
+Traefik→API server (the `kubernetesCRD` provider watch). Set
+`networkPolicy.enabled=true` to render a minimal, working policy set. Details and
+tightening options in **[`docs/network-policies.md`](docs/network-policies.md)**.
+
+> Cilium can also **be the load balancer** (LB-IPAM) — that is the
+> `loadBalancer.backend=cilium` value (§4), a different axis from NetworkPolicy.
+
+<details>
+<summary><b>Diagram — allowed flows with networkPolicy.enabled</b> (click to expand)</summary>
+
+```mermaid
+flowchart TD
+    LB["LoadBalancer"] -->|":80 / :443 (8000/8443)"| TR["Traefik"]
+    TR -->|":4180 ForwardAuth"| OP["oauth2-proxy"]
+    TR -->|"API-server port (CRD watch)"| API["kube-apiserver"]
+    OP -->|":443 OIDC"| KC["Keycloak"]
+    TR -.->|"DNS :53"| DNS["kube-dns"]
+    OP -.->|"DNS :53"| DNS
+    classDef inpol fill:#E8E0FF,stroke:#7C4DFF,color:#111;
+    classDef ext fill:#ECEFF1,stroke:#607D8B,color:#111;
+    class TR,OP inpol;
+    class LB,API,KC,DNS ext;
+```
+
+</details>
+
+## 12. Air-gapped / disconnected
 
 Two things must resolve without internet; both are handled — details in
 [`docs/air-gapped.md`](docs/air-gapped.md):
@@ -369,7 +476,7 @@ Two things must resolve without internet; both are handled — details in
    ```
    Mirror `oauth2-proxy` and `traefik` into that registry beforehand.
 
-## 11. Upgrade
+## 13. Upgrade
 
 ```bash
 # Bump the vendored Traefik chart:
@@ -388,7 +495,7 @@ Keep Traefik **≥ v3.4** (the `errors` middleware `statusRewrites` requirement)
 Under GitOps, commit the change and let ArgoCD reconcile — do not `helm`/`kubectl`
 by hand.
 
-## 12. Decommission
+## 14. Decommission
 
 ```bash
 # Imperative:
@@ -403,7 +510,7 @@ External cleanup: DNS record, Keycloak client + `traefik-admin` role, MetalLB po
 (if dedicated), and the Traefik CRDs if you want them gone
 (`kubectl get crd | grep traefik.io`).
 
-## 13. Operations & troubleshooting
+## 15. Operations & troubleshooting
 
 ```bash
 kubectl get pods,svc -n traefik
@@ -422,8 +529,10 @@ kubectl logs -n traefik deploy/traefik | grep -i error
 | Service has no EXTERNAL-IP | No LB provider/pool, or blocked L2 on vSphere | Install MetalLB/NSX ALB/kube-vip; allow Forged Transmits, or use BGP |
 | Traefik pod `CreateContainerConfigError` (OpenShift) | A pinned UID conflicts with the SCC | Use `platform=openshift` (leaves UID unset) — the chart validates this |
 | `helm` aborts: "requires an explicit non-root runAsUser" | Installed with no preset | Install with a `sites/` preset |
+| Login times out / ForwardAuth 502 after enabling policies | `networkPolicy.enabled=true` but the cluster/CNI needs different ports (e.g. API server on 443) | Set `networkPolicy.apiServerPort`; check `keycloakEgressCIDR`; see [`docs/network-policies.md`](docs/network-policies.md) |
+| `oauth2-proxy-secret` never appears (ESO) | Wrong Vault role/path, or ESO can't auth | Check the `ExternalSecret` status and ESO logs; verify the Vault role binds the SA + namespace ([`docs/external-secrets.md`](docs/external-secrets.md)) |
 
-## 14. GitOps with ArgoCD
+## 16. GitOps with ArgoCD
 
 <details>
 <summary><b>Diagram — GitOps reconciliation</b> (click to expand)</summary>
@@ -456,7 +565,7 @@ Design points (full detail in [`argocd/README.md`](argocd/README.md)):
   destination (`traefik` namespace) and cluster-scoped resources.
 - **Secrets** stay out of git (Sealed/External Secrets), or use `secret.mode=inline`.
 
-## 15. Contributing & license
+## 17. Contributing & license
 
 CI (`.github/workflows/ci.yml`) runs `helm lint` + `helm template`/kubeconform for
 every preset, the validation-rule checks, `yamllint`, `shellcheck`, and parses

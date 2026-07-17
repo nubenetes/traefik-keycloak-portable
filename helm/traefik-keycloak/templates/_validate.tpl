@@ -13,7 +13,7 @@ Each check calls `fail` with an actionable message.
   {{- fail (printf "platform=%q is invalid. Choose one of: %s" .Values.platform (join ", " $platforms)) -}}
 {{- end -}}
 
-{{- $backends := list "metallb" "nsx-alb" "kube-vip" "generic" -}}
+{{- $backends := list "metallb" "nsx-alb" "kube-vip" "cilium" "generic" -}}
 {{- if not (has .Values.loadBalancer.backend $backends) -}}
   {{- fail (printf "loadBalancer.backend=%q is invalid. Choose one of: %s" .Values.loadBalancer.backend (join ", " $backends)) -}}
 {{- end -}}
@@ -23,7 +23,7 @@ Each check calls `fail` with an actionable message.
   {{- fail (printf "caTrust.mode=%q is invalid. Choose one of: %s" .Values.caTrust.mode (join ", " $caModes)) -}}
 {{- end -}}
 
-{{- $secretModes := list "external" "inline" -}}
+{{- $secretModes := list "external" "inline" "external-secrets" -}}
 {{- if not (has .Values.secret.mode $secretModes) -}}
   {{- fail (printf "secret.mode=%q is invalid. Choose one of: %s" .Values.secret.mode (join ", " $secretModes)) -}}
 {{- end -}}
@@ -55,6 +55,17 @@ Each check calls `fail` with an actionable message.
 {{- if eq .Values.secret.mode "inline" -}}
   {{- if or (empty .Values.secret.clientSecret) (empty .Values.secret.cookieSecret) -}}
     {{- fail "secret.mode=inline requires both secret.clientSecret and secret.cookieSecret to be set." -}}
+  {{- end -}}
+{{- end -}}
+
+{{/* 4b. external-secrets mode needs a store to read from. */}}
+{{- if eq .Values.secret.mode "external-secrets" -}}
+  {{- $es := .Values.secret.externalSecrets -}}
+  {{- if and $es.createStore (empty (($es.vault).server)) -}}
+    {{- fail "secret.mode=external-secrets with createStore=true requires secret.externalSecrets.vault.server (the Vault address)." -}}
+  {{- end -}}
+  {{- if empty (($es.storeRef).name) -}}
+    {{- fail "secret.mode=external-secrets requires secret.externalSecrets.storeRef.name." -}}
   {{- end -}}
 {{- end -}}
 

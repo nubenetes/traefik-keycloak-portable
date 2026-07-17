@@ -1,0 +1,83 @@
+{{- /*
+Optional NetworkPolicies for default-deny clusters (Calico / Cilium / etc.).
+Rendered only when networkPolicy.enabled=true. These are a minimal, working
+starting point — tighten the selectors/CIDRs to your environment.
+
+Flows allowed:
+  Traefik      ingress: web/websecure/ping ; egress: DNS, oauth2-proxy:4180, API server
+  oauth2-proxy ingress: 4180 (Traefik ForwardAuth + probes) ; egress: DNS, Keycloak:443
+*/ -}}
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: traefik
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tk.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: traefik
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # LoadBalancer traffic (and kubelet health probes) to the entrypoints.
+    - ports:
+        - { protocol: TCP, port: 8000 }
+        - { protocol: TCP, port: 8443 }
+        - { protocol: TCP, port: 8080 }
+  egress:
+    # DNS
+    - to: []
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    # ForwardAuth -> oauth2-proxy
+    - to:
+        - podSelector:
+            matchLabels:
+              app: oauth2-proxy
+      ports:
+        - { protocol: TCP, port: 4180 }
+    # kubernetesCRD provider -> API server (IP varies; allow the port cluster-wide)
+    - ports:
+        - { protocol: TCP, port: {{ .Values.networkPolicy.apiServerPort }} }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: oauth2-proxy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tk.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: oauth2-proxy
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # ForwardAuth from Traefik + kubelet probes on 4180.
+    - ports:
+        - { protocol: TCP, port: 4180 }
+  egress:
+    # DNS
+    - to: []
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    # OIDC -> Keycloak (HTTPS). Restrict to a CIDR if networkPolicy.keycloakEgressCIDR is set.
+    {{- if .Values.networkPolicy.keycloakEgressCIDR }}
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.networkPolicy.keycloakEgressCIDR | quote }}
+      ports:
+        - { protocol: TCP, port: 443 }
+    {{- else }}
+    - ports:
+        - { protocol: TCP, port: 443 }
+    {{- end }}
+{{- end }}

@@ -50,6 +50,16 @@ jobs:
               | kubeconform -ignore-missing-schemas -summary
           done
 
+      - name: Helm template optional features (ESO + NetworkPolicy + cilium)
+        run: |
+          set -euo pipefail
+          helm template t ./helm/traefik-keycloak -n traefik -f sites/values-rke2.yaml \
+            --set secret.mode=external-secrets \
+            --set secret.externalSecrets.vault.server=https://vault.example:8200 \
+            --set networkPolicy.enabled=true \
+            --set loadBalancer.backend=cilium \
+            | kubeconform -ignore-missing-schemas -summary
+
       - name: Helm validation rules (invalid combos must FAIL)
         run: |
           set -euo pipefail
@@ -61,6 +71,11 @@ jobs:
           if helm template t ./helm/traefik-keycloak -n traefik \
                -f sites/values-rke2.yaml --set caTrust.mode=openshift-injector >/dev/null 2>&1; then
             echo "ERROR: openshift-injector on rke2 should have failed"; exit 1
+          fi
+          # external-secrets with an empty Vault server must be rejected.
+          if helm template t ./helm/traefik-keycloak -n traefik -f sites/values-rke2.yaml \
+               --set secret.mode=external-secrets --set secret.externalSecrets.vault.server= >/dev/null 2>&1; then
+            echo "ERROR: external-secrets without a Vault server should have failed"; exit 1
           fi
           echo "validation rules OK"
 

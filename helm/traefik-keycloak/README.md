@@ -48,10 +48,11 @@ All flags live in [`values.yaml`](values.yaml) (fully commented). The important 
 | Flag | Values | What it does |
 |---|---|---|
 | `platform` | `generic` `openshift` `rke2` `k3s` `kubeadm` | Distribution profile. Drives pod-security expectations, validated. |
-| `loadBalancer.backend` | `metallb` `nsx-alb` `kube-vip` `generic` | Documents/validates the LB. Actual Service annotations go in `traefik.service.annotations` (set by the preset). |
+| `loadBalancer.backend` | `metallb` `nsx-alb` `kube-vip` `cilium` `generic` | Documents/validates the LB. Actual Service annotations go in `traefik.service.annotations` (set by the preset). |
 | `image.registry` | `""` or a host | **Airgap** registry prefix for the oauth2-proxy image. Traefik's image mirror goes in `traefik.image.registry`. |
 | `caTrust.mode` | `none` `openshift-injector` `configmap` `insecure` | How oauth2-proxy trusts the Keycloak TLS cert. |
-| `secret.mode` | `external` `inline` | Reference a pre-created Secret (recommended) or render one from values (dev). |
+| `secret.mode` | `external` `inline` `external-secrets` | Pre-created Secret (recommended), render from values (dev), or pull from a backend via the External Secrets Operator (`../../docs/external-secrets.md`). |
+| `networkPolicy.enabled` | `false` `true` | Optional NetworkPolicies for default-deny clusters (`../../docs/network-policies.md`). |
 | `dashboard.*`, `keycloak.*`, `oauth2Proxy.*` | — | Hostnames, OIDC issuer, role gate. |
 
 ### Why platform and LB are two separate flags

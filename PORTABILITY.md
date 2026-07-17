@@ -16,8 +16,10 @@ the preset summary and the flag reference, see the **[README](README.md)** (§2�
 |---|---|---|
 | Packaging | Single `helm/values-traefik.yaml` + raw `manifests/` (Kustomize) | Umbrella Helm chart with the Traefik chart as a dependency |
 | Platform coupling | OpenShift SCC / Routes / `oc` assumptions | `platform` flag; `kubectl`; validated per distro |
-| Load balancer | MetalLB | `loadBalancer.backend`: metallb / nsx-alb / kube-vip / generic |
+| Load balancer | MetalLB | `loadBalancer.backend`: metallb / nsx-alb / kube-vip / cilium / generic |
 | CA trust | OpenShift trusted-CA injector | `caTrust.mode`: none / openshift-injector / configmap / insecure |
+| Secrets backend | ESO + Vault as raw `manifests/vault/` | `secret.mode`: external / inline / **external-secrets** (ESO + Vault, chart-templated) |
+| NetworkPolicy | — (none) | Optional `networkPolicy.enabled` for default-deny CNIs |
 | Airgap (chart) | Chart pulled from `traefik.github.io` | Chart **vendored** in `charts/*.tgz` |
 | Airgap (images) | OpenShift `ImageDigestMirrorSet` (cluster-wide) | `image.registry` / `traefik.image.registry` value overrides (works anywhere) |
 | ArgoCD | App-of-Apps (two child Applications) | Single multi-source Application |

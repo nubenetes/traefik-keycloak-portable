@@ -44,10 +44,13 @@ platform: generic
 # implies are written into `traefik.service.annotations` (below) by each preset,
 # because only the subchart can consume them.
 loadBalancer:
-  # metallb | nsx-alb | kube-vip | generic
+  # metallb | nsx-alb | kube-vip | cilium | generic
   #   metallb    MetalLB (L2 or BGP). Common on RKE2/k3s/kubeadm/bare-metal.
   #   nsx-alb    VMware NSX Advanced LB (Avi). Typical on Tanzu/TKG over vSphere.
   #   kube-vip   kube-vip in service mode. Bare-metal / edge Tanzu and others.
+  #   cilium     Cilium LB-IPAM (L2 announcements or BGP). When Cilium is the CNI
+  #              and does the LB, no MetalLB is needed. Request an IP with the
+  #              annotation "lbipam.cilium.io/ips" (or a loadBalancerClass).
   #   generic    Any other LB controller — you supply the annotations yourself.
   backend: metallb
 
@@ -111,10 +114,14 @@ caTrust:
 
 # -----------------------------------------------------------------------------
 # secret — the oauth2-proxy client & cookie secrets.
-#   external  You create the Secret out-of-band (recommended; GitOps-friendly
-#             via Sealed Secrets / External Secrets). The chart only references it.
-#   inline    The chart renders the Secret from the values below. Convenient for
-#             dev; keep these values out of public git.
+#   external          You create the Secret out-of-band (e.g. Sealed Secrets, or
+#                     manually). The chart only references it by name.
+#   inline            The chart renders the Secret from the values below. Dev only;
+#                     keep these values out of public git.
+#   external-secrets  The chart renders an External Secrets Operator (ESO)
+#                     ExternalSecret (and optionally a SecretStore) that pulls the
+#                     credentials from a backend such as HashiCorp Vault. No secret
+#                     material in git. See docs/external-secrets.md.
 secret:
   mode: external
   name: oauth2-proxy-secret
@@ -122,6 +129,55 @@ secret:
   clientId: traefik-dashboard
   clientSecret: ""
   cookieSecret: ""   # 16/24/32 bytes: openssl rand -base64 32 | tr -- '+/' '-_'
+
+  # Used only when mode=external-secrets (ESO). Contains NO secret material —
+  # only references to where the values live in the backend.
+  externalSecrets:
+    # ESO API version. ESO >= 0.14 uses external-secrets.io/v1; older: v1beta1.
+    apiVersion: external-secrets.io/v1
+    refreshInterval: 1h
+    # Render a ServiceAccount for ESO->Vault Kubernetes auth (set false to reuse one).
+    createServiceAccount: true
+    serviceAccountName: external-secrets-vault
+    # Render the SecretStore (set false to reference a pre-existing one by name).
+    createStore: true
+    storeRef:
+      name: vault-backend
+      kind: SecretStore          # or ClusterSecretStore
+    # Vault (KV v2) connection for the rendered SecretStore. Only used when
+    # createStore=true. No credentials here — ESO authenticates via Kubernetes auth.
+    vault:
+      server: "https://vault.example.com:8200"
+      path: "secret"             # KV v2 mount point
+      version: v2
+      auth:
+        kubernetes:
+          mountPath: "kubernetes"
+          role: "traefik-dashboard"
+      # Optional CA for a self-signed Vault (references a ConfigMap key):
+      # caProvider: { type: ConfigMap, name: oauth2-proxy-trusted-ca, key: ca-bundle.crt }
+      caProvider: {}
+    # Where the oauth2-proxy credentials live in the backend (KV v2 key + fields).
+    remoteRef:
+      key: traefik/oauth2-proxy
+      clientIdProperty: client_id
+      clientSecretProperty: client_secret
+      cookieSecretProperty: cookie_secret
+
+# -----------------------------------------------------------------------------
+# networkPolicy — optional NetworkPolicies for clusters that default-deny traffic
+# (common with Calico / Cilium in secure / air-gapped environments). Without them,
+# on a default-deny cluster the ForwardAuth call (Traefik->oauth2-proxy), the OIDC
+# call (oauth2-proxy->Keycloak) and Traefik's API-server watch would be blocked.
+# The workload is otherwise CNI-agnostic; this is the only CNI-related knob.
+networkPolicy:
+  enabled: false
+  # Egress target for oauth2-proxy -> Keycloak. Empty = allow :443 to anywhere
+  # (plus DNS). Set a CIDR to tighten it to your Keycloak/OIDC endpoint.
+  keycloakEgressCIDR: ""
+  # API-server egress port for Traefik's kubernetesCRD provider (6443 on most
+  # distros; 443 on some managed ones).
+  apiServerPort: 6443
 
 # =============================================================================
 # traefik — subchart values (official Traefik chart 41.0.2 = Traefik v3.7.6).
