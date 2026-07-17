@@ -26,12 +26,33 @@
   <img alt="LoadBalancer" src="https://img.shields.io/badge/LB-MetalLB%20%7C%20NSX%20ALB%20%7C%20kube--vip-0080FF">
 </p>
 
-Deploys the **official Traefik chart** (vendored) exposed via a **LoadBalancer**,
-with the Traefik **dashboard authenticated against Keycloak** (oauth2-proxy +
-ForwardAuth) and **restricted by role** (`traefik-admin`). One umbrella Helm
-chart, **portable across on-prem / air-gapped Kubernetes distributions** —
-**OpenShift, Rancher RKE2, k3s, kubeadm, VMware Tanzu/TKG** — driven by a small
-set of **feature flags** with fail-fast validation of impossible combinations.
+A single **umbrella Helm chart** that deploys the **official Traefik chart**
+(vendored) behind a **LoadBalancer**, with the Traefik **dashboard authenticated
+against Keycloak** (oauth2-proxy + ForwardAuth) and **restricted by role**
+(`traefik-admin`). It is **portable across on-prem / air-gapped Kubernetes
+distributions** — **OpenShift, Rancher RKE2, k3s, kubeadm, VMware Tanzu/TKG** —
+driven by a small set of **feature flags**, with **fail-fast validation** that
+rejects impossible combinations at `helm template` time instead of shipping a
+broken deployment.
+
+Rather than a per-distribution fork, one core composes along a few independent
+axes:
+
+- **Distribution** — `platform`: OpenShift (SCC-aware UID handling) · RKE2 · k3s ·
+  kubeadm · generic. ([§2](#2-how-portability-works-orthogonal-axes), [§4](#4-supported-platforms--presets))
+- **Load balancer** — `loadBalancer.backend`: **MetalLB · NSX ALB (Avi) ·
+  kube-vip · Cilium** LB-IPAM · generic. ([§4](#4-supported-platforms--presets))
+- **Secrets** — `secret.mode`: pre-created (Sealed Secrets) · inline (dev) ·
+  **External Secrets Operator + HashiCorp Vault**. ([§10](#10-secrets-management))
+- **Keycloak TLS trust** — `caTrust.mode`: none · OpenShift CA injector ·
+  custom CA ConfigMap · insecure (test). ([§9](#9-feature-flag-reference))
+- **Network** — optional **NetworkPolicies** for default-deny CNIs (Calico /
+  Cilium); storage (**CSI**) is not applicable — the workload is stateless.
+  ([§11](#11-cni--csi))
+- **Air-gap** — vendored Traefik chart (no `traefik.github.io` pull) + internal
+  registry-mirror overrides for every image. ([§12](#12-air-gapped--disconnected))
+- **Delivery** — imperative (`install.sh`) or **GitOps** (single multi-source
+  ArgoCD Application). ([§8](#8-step-by-step-install), [§16](#16-gitops-with-argocd))
 
 > This is the multi-distribution sibling of
 > [`traefik-keycloak-openshift-gitops`](https://github.com/nubenetes/traefik-keycloak-openshift-gitops)
