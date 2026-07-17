@@ -1,139 +1,61 @@
-# Multi-distribution portability
+# Portability notes — how this repo relates to the OpenShift-only sibling
 
-This repo started as an OpenShift-only deployment. It is now portable across
-on-prem / airgapped Kubernetes distributions through the **`traefik-keycloak`
-umbrella Helm chart** and a set of **feature-flag presets**.
+This repo is the **multi-distribution** version of
+[`traefik-keycloak-openshift-gitops`](https://github.com/nubenetes/traefik-keycloak-openshift-gitops).
+Same core (Traefik + oauth2-proxy + Keycloak-protected dashboard), generalised
+from OpenShift-only to **OpenShift, RKE2, k3s, kubeadm and VMware Tanzu/TKG**
+through an umbrella Helm chart with feature-flag presets.
 
-Supported out of the box: **OpenShift**, **Rancher RKE2**, **k3s**, **vanilla
-kubeadm**, and **VMware Tanzu / TKG** (both NSX ALB and kube-vip). Any other
-CNCF-conformant cluster works via the `generic`/`kubeadm` profile.
+For architecture, the orthogonal-axes model, the platform × load-balancer matrix,
+the preset summary and the flag reference, see the **[README](README.md)** (§2–§4,
+§9). This file only records *why the design differs* and the *bugs it fixes*.
 
-## How the combinations work (orthogonal axes)
+## Design differences vs the OpenShift-only sibling
 
-There is **one core** (Traefik + oauth2-proxy + the dashboard routes, identical
-everywhere). Portability comes from a few **independent axes** you pick from; the
-chart renders the same core and `_validate.tpl` rejects the combinations that
-cannot work. This is why there is no per-platform variant of the chart — you
-compose one, you don't fork.
-
-<details>
-<summary><b>Diagram — orthogonal axes compose one core</b> (click to expand)</summary>
-
-```mermaid
-flowchart LR
-    subgraph AXES["Pick one value per axis"]
-        P["platform<br/>openshift · rke2 · k3s · kubeadm · generic"]
-        LB["loadBalancer.backend<br/>metallb · nsx-alb · kube-vip · generic"]
-        CA["caTrust.mode<br/>none · openshift-injector · configmap · insecure"]
-        SEC["secret.mode<br/>external · inline"]
-        REG["image.registry<br/>public · internal mirror (airgap)"]
-    end
-    AXES --> CORE["traefik-keycloak umbrella chart<br/>(same core: Traefik + oauth2-proxy + routes)"]
-    CORE --> VAL{"_validate.tpl<br/>rejects impossible combos"}
-    VAL -->|"valid"| OUT["Rendered manifests"]
-    VAL -->|"invalid"| ERR["helm aborts with an actionable message"]
-```
-
-</details>
-
-The axes are genuinely independent — e.g. OpenShift can use MetalLB *or* another
-LB, and Tanzu can use NSX ALB *or* kube-vip. The matrices below inventory the
-combinations that matter; the full Cartesian product is intentionally not
-enumerated (it would be hundreds of rows describing the same core).
-
-### Platform × LoadBalancer backend
-
-What is typical, merely possible, or best avoided per platform:
-
-| Platform ↓ / LB → | `metallb` | `nsx-alb` | `kube-vip` | `generic` |
-|---|---|---|---|---|
-| **openshift** | ✅ typical (MetalLB Operator) | ⚪ if Avi/AKO present | ⚪ possible | ⚪ external/physical LB |
-| **rke2** | ✅ typical | ⚪ possible | ⚪ possible | ⚪ possible |
-| **k3s** | ✅ typical | ⚪ possible | ⚪ possible | ⚪ built-in ServiceLB (klipper) |
-| **kubeadm / generic** | ✅ typical | ⚪ possible | ⚪ possible | ⚪ possible |
-| **Tanzu / TKG (vSphere)** | ⚠️ L2 often blocked by vSphere port-group security — use BGP | ✅ typical (NSX ALB + AKO) | ✅ typical (bare-metal/edge) | ⚪ possible |
-
-✅ typical · ⚪ possible (supported, just less common) · ⚠️ caveat — read the note.
-
-> vSphere caveat applies to **any** L2 mode (MetalLB L2, kube-vip ARP) regardless
-> of platform: the port group must allow *Forged Transmits*, or the VIP is assigned
-> but no traffic arrives. MetalLB **BGP** mode sidesteps it.
-
-### Preset summary
-
-Each `sites/values-<platform>.yaml` is a small delta over the chart defaults:
-
-| Preset | `platform` | LB backend | Traefik pod UID | `caTrust.mode` | Cluster prerequisite |
-|---|---|---|---|---|---|
-| `values-openshift` | `openshift` | `metallb` | **null** (SCC injects a UID) | `openshift-injector` | MetalLB Operator + pool |
-| `values-rke2` | `rke2` | `metallb` | `65532` | `none` | Disable bundled ingress-nginx; MetalLB |
-| `values-k3s` | `k3s` | `metallb` | `65532` | `none` | Install k3s `--disable traefik`; MetalLB |
-| `values-kubeadm` | `kubeadm` | `metallb` | `65532` | `none` | PodSecurity `restricted`; MetalLB |
-| `values-tanzu-nsx` | `generic` | `nsx-alb` | `65532` | `none` | NSX ALB (Avi) + AKO |
-| `values-tanzu-kubevip` | `generic` | `kube-vip` | `65532` | `none` | kube-vip in service mode |
-
-### Keycloak certificate trust (`caTrust.mode`)
-
-| Mode | Use when | Requires |
+| Aspect | OpenShift-only sibling | This repo |
 |---|---|---|
-| `none` | Keycloak presents a public / enterprise-trusted cert | — |
-| `openshift-injector` | OpenShift, trust the cluster CA bundle automatically | `platform=openshift` (validated) |
-| `configmap` | Any distro, self-signed / private CA | `caTrust.bundle` (PEM) **or** a pre-created ConfigMap |
-| `insecure` | Testing only — skips TLS verification | — (never in production) |
+| Packaging | Single `helm/values-traefik.yaml` + raw `manifests/` (Kustomize) | Umbrella Helm chart with the Traefik chart as a dependency |
+| Platform coupling | OpenShift SCC / Routes / `oc` assumptions | `platform` flag; `kubectl`; validated per distro |
+| Load balancer | MetalLB | `loadBalancer.backend`: metallb / nsx-alb / kube-vip / generic |
+| CA trust | OpenShift trusted-CA injector | `caTrust.mode`: none / openshift-injector / configmap / insecure |
+| Airgap (chart) | Chart pulled from `traefik.github.io` | Chart **vendored** in `charts/*.tgz` |
+| Airgap (images) | OpenShift `ImageDigestMirrorSet` (cluster-wide) | `image.registry` / `traefik.image.registry` value overrides (works anywhere) |
+| ArgoCD | App-of-Apps (two child Applications) | Single multi-source Application |
 
-### Other axes
+Both approaches are valid; the sibling is deliberately OpenShift-tuned, this one
+trades some OpenShift-nativeness for cross-distribution reach.
 
-- **`secret.mode`** — `external` (default; you create the Secret out-of-band,
-  GitOps-friendly via Sealed/External Secrets) or `inline` (chart renders it from
-  values; dev only).
-- **`image.registry`** — empty for public registries, or an internal mirror host
-  for **airgap** (applies to oauth2-proxy; set `traefik.image.registry` for the
-  Traefik image). See the chart README.
+## Two bugs in the OpenShift-only design (fixed here)
 
-## Use this (current, portable)
+While generalising the code, two defects surfaced that also exist in the sibling
+repo (tracked there separately):
 
-- Chart: [`helm/traefik-keycloak/`](helm/traefik-keycloak/README.md) — start here.
-- Presets: [`sites/values-<platform>.yaml`](sites/) — pick one.
-- Imperative: `./install.sh <platform> [helm args...]`
-- GitOps: [`argocd/apps/traefik-keycloak.yaml`](argocd/apps/traefik-keycloak.yaml)
-  (single Application, vendored chart, airgap-ready).
+1. **The values did not validate against the pinned chart (41.0.2).** The old
+   `helm/values-traefik.yaml` used keys from an earlier chart generation, so
+   `helm install` aborted with a schema error:
+   - `logs.general.level` / `logs.access.enabled` → `log.level` + `accessLog.enabled`
+   - `ports.web.redirectTo` → `ports.web.http.redirections.entryPoint`
+   - `ports.websecure.tls` → `ports.websecure.http.tls`
 
-```bash
-helm install traefik ./helm/traefik-keycloak -f sites/values-rke2.yaml \
-  --set dashboard.host=traefik.apps.mycluster.com \
-  --set dashboard.cookieDomain=.apps.mycluster.com \
-  --set keycloak.issuerUrl=https://keycloak.apps.mycluster.com/realms/myrealm
-```
+   This chart carries the corrected schema (and enables access logging via
+   `accessLog.enabled`, since an empty `accessLog` map leaves it off).
 
-The chart README documents every feature flag, the fail-fast validation of
-impossible combinations, and the airgap story (vendored Traefik chart + registry
-prefixes). Read it before deploying.
+2. **The pod UID was pinned despite claims to the contrary.** Chart 41.0.2
+   defaults `podSecurityContext.runAsUser`/`runAsGroup` to **65532**, and Helm's
+   deep-merge keeps them unless deleted. So the Traefik pod shipped UID 65532 and
+   OpenShift's `restricted-v2` SCC would reject it. This chart deletes the default
+   with an explicit `null` in `values.yaml`, and each non-OpenShift preset adds
+   back a valid non-root UID.
 
-## What changed, and why
+   > Subtlety: a `-f` preset **cannot** inject a subchart-level `null` (Helm
+   > deletes the key from the overrides and the subchart re-inherits its own
+   > default). Only an explicit `null` in this chart's `values.yaml` survives the
+   > subchart coalesce — which is why the UID default lives there and the presets
+   > add UIDs rather than the reverse. See the comment in
+   > [`values.yaml`](helm/traefik-keycloak/values.yaml).
 
-Two problems in the original OpenShift-only layout were fixed on the way:
+## Still applies from the shared design
 
-1. **`helm/values-traefik.yaml` did not validate against the pinned chart
-   (41.0.2).** It used pre-existing keys (`logs.*`, `ports.web.redirectTo`,
-   `ports.websecure.tls`) that the chart renamed (`log`/`accessLog`,
-   `ports.web.http.redirections`, `ports.websecure.http.tls`). The umbrella
-   chart carries the corrected values.
-2. **The README claimed the Traefik pod UID was left unset, but it was not.**
-   Chart 41.0.2 defaults `runAsUser: 65532`, and Helm's deep-merge kept it — which
-   OpenShift's restricted-v2 SCC rejects. The chart now deletes it via an explicit
-   null and each non-OpenShift preset sets a valid non-root UID.
-
-## Removed in the migration
-
-The original OpenShift-only pieces were removed once the umbrella chart replaced
-them (they double-deployed the same resources and one no longer validated):
-
-- `helm/values-traefik.yaml` → `helm/traefik-keycloak/values.yaml`.
-- `manifests/` (raw oauth2-proxy + middlewares + routes) → the chart's `templates/`.
-- `argocd/apps/traefik.yaml`, `argocd/apps/traefik-dashboard.yaml`,
-  `argocd/root-app.yaml` (app-of-apps) → the single
-  `argocd/apps/traefik-keycloak.yaml`.
-
-The Keycloak setup (`keycloak/`), TLS guidance (`docs/tls-secret.md`), secret
-templates (`secrets/`) and the MetalLB example (`metallb/`) are unchanged and
-still apply.
+The Keycloak client setup (`keycloak/`), TLS guidance (`docs/tls-secret.md`),
+secret template (`secrets/`) and the MetalLB example (`metallb/`) carry over
+unchanged.

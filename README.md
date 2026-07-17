@@ -26,20 +26,51 @@
   <img alt="LoadBalancer" src="https://img.shields.io/badge/LB-MetalLB%20%7C%20NSX%20ALB%20%7C%20kube--vip-0080FF">
 </p>
 
-Deploys the **official Traefik chart** exposed via a **LoadBalancer**, with the
-Traefik **dashboard authenticated against Keycloak** (oauth2-proxy + ForwardAuth)
-and **restricted by role** (`traefik-admin`). Portable across on-prem / airgapped
-distributions — **OpenShift, Rancher RKE2, k3s, kubeadm, VMware Tanzu/TKG** — via
-a feature-flag umbrella Helm chart.
+Deploys the **official Traefik chart** (vendored) exposed via a **LoadBalancer**,
+with the Traefik **dashboard authenticated against Keycloak** (oauth2-proxy +
+ForwardAuth) and **restricted by role** (`traefik-admin`). One umbrella Helm
+chart, **portable across on-prem / air-gapped Kubernetes distributions** —
+**OpenShift, Rancher RKE2, k3s, kubeadm, VMware Tanzu/TKG** — driven by a small
+set of **feature flags** with fail-fast validation of impossible combinations.
 
-- **Start here:** [`PORTABILITY.md`](PORTABILITY.md) and the chart README
-  [`helm/traefik-keycloak/README.md`](helm/traefik-keycloak/README.md).
-- **GitOps:** [`argocd/README.md`](argocd/README.md).
+> This is the multi-distribution sibling of
+> [`traefik-keycloak-openshift-gitops`](https://github.com/nubenetes/traefik-keycloak-openshift-gitops)
+> (OpenShift-only). If you deploy on OpenShift *exclusively*, either works; this
+> repo generalises the same design to any distribution.
 
-## Architecture
+## Table of contents
+
+1. [Architecture](#1-architecture)
+2. [How portability works (orthogonal axes)](#2-how-portability-works-orthogonal-axes)
+3. [Deployment topology](#3-deployment-topology)
+4. [Supported platforms & presets](#4-supported-platforms--presets)
+5. [Repository layout](#5-repository-layout)
+6. [Prerequisites](#6-prerequisites)
+7. [Configuration](#7-configuration)
+8. [Step-by-step install](#8-step-by-step-install)
+9. [Feature-flag reference](#9-feature-flag-reference)
+10. [Air-gapped / disconnected](#10-air-gapped--disconnected)
+11. [Upgrade](#11-upgrade)
+12. [Decommission](#12-decommission)
+13. [Operations & troubleshooting](#13-operations--troubleshooting)
+14. [GitOps with ArgoCD](#14-gitops-with-argocd)
+15. [Contributing & license](#15-contributing--license)
+
+---
+
+## 1. Architecture
 
 The authentication flow is the **same on every platform** — only the load
-balancer and pod-security profile differ (see [`PORTABILITY.md`](PORTABILITY.md)).
+balancer and the pod-security profile differ.
+
+- **Traefik OSS has no native OIDC.** `oauth2-proxy` performs the OIDC exchange
+  with Keycloak; Traefik only asks "is this request authenticated?" through the
+  `ForwardAuth` middleware against `/oauth2/auth`.
+- The **`errors` middleware with `statusRewrites: "401": 302`** turns the 401
+  into a real redirect to Keycloak. **Requires Traefik ≥ v3.4.** Without it you
+  would see a blank 401 instead of the login page.
+- **Role gate:** `oauth2Proxy.allowedRoles=traefik-dashboard:traefik-admin` only
+  lets users carrying that role through; everyone else gets 403 after login.
 
 <details>
 <summary><b>Diagram — authentication flow</b> (click to expand)</summary>
@@ -59,92 +90,379 @@ flowchart TD
 
 </details>
 
-Why each piece:
+## 2. How portability works (orthogonal axes)
 
-- **Traefik OSS has no native OIDC.** `oauth2-proxy` performs the OIDC exchange
-  with Keycloak; Traefik only asks "is this request authenticated?" through the
-  `ForwardAuth` middleware against `/oauth2/auth`.
-- The **`errors` middleware with `statusRewrites: "401": 302`** turns the 401
-  into a real redirect to Keycloak. **Requires Traefik ≥ v3.4.** Without it you
-  would see a blank 401 instead of the login page.
-- **Role gate:** `OAUTH2_PROXY_ALLOWED_ROLES=traefik-dashboard:traefik-admin`
-  only lets users with that role through.
+There is **one core** (Traefik + oauth2-proxy + the dashboard routes, identical
+everywhere). Portability comes from a few **independent axes** you pick from; the
+chart renders the same core and [`_validate.tpl`](helm/traefik-keycloak/templates/_validate.tpl)
+rejects the combinations that cannot work. This is why there is **no per-platform
+fork** of the chart — you compose one, you don't copy it.
 
-## Quickstart
+<details>
+<summary><b>Diagram — orthogonal axes compose one core</b> (click to expand)</summary>
 
-```bash
-# 1) Pick a platform preset and fill in the 3 real values:
-helm install traefik ./helm/traefik-keycloak -f sites/values-rke2.yaml \
-  --set dashboard.host=traefik.apps.mycluster.com \
-  --set dashboard.cookieDomain=.apps.mycluster.com \
-  --set keycloak.issuerUrl=https://keycloak.apps.mycluster.com/realms/myrealm
-
-# ...or imperatively with the wrapper script:
-./install.sh rke2 --set dashboard.host=... --set keycloak.issuerUrl=...
+```mermaid
+flowchart LR
+    subgraph AXES["Pick one value per axis"]
+        direction TB
+        P["platform<br/>openshift · rke2 · k3s · kubeadm · generic"]
+        LB["loadBalancer.backend<br/>metallb · nsx-alb · kube-vip · generic"]
+        CA["caTrust.mode<br/>none · openshift-injector · configmap · insecure"]
+        SEC["secret.mode<br/>external · inline"]
+        REG["image.registry<br/>public · internal mirror (air-gap)"]
+    end
+    AXES --> CORE["traefik-keycloak umbrella chart<br/>(same core: Traefik + oauth2-proxy + routes)"]
+    CORE --> VAL{"_validate.tpl<br/>rejects impossible combos"}
+    VAL -->|"valid"| OUT["Rendered manifests"]
+    VAL -->|"invalid"| ERRP["helm aborts with an actionable message"]
+    classDef axis fill:#DDE8FF,stroke:#3B6FD4,color:#111;
+    classDef gate fill:#FFF3CD,stroke:#E0A800,color:#111;
+    class P,LB,CA,SEC,REG axis;
+    class VAL gate;
 ```
 
-Platforms: `openshift`, `rke2`, `k3s`, `kubeadm`, `tanzu-nsx`, `tanzu-kubevip`.
-Every feature flag is documented in
-[`helm/traefik-keycloak/values.yaml`](helm/traefik-keycloak/values.yaml); the chart
-validates impossible combinations and aborts with a clear message.
+</details>
 
-## Repository layout
+The axes are genuinely independent — e.g. OpenShift can use MetalLB *or* another
+LB, and Tanzu can use NSX ALB *or* kube-vip. See §4 for the combinations that
+matter; the full Cartesian product is intentionally not enumerated (hundreds of
+rows describing the same core).
+
+## 3. Deployment topology
+
+<details>
+<summary><b>Diagram — deployment topology (any distribution)</b> (click to expand)</summary>
+
+```mermaid
+flowchart TB
+    subgraph EXT["🌐 On-prem systems (may be air-gapped)"]
+      direction TB
+      BROWSER["Browser"]
+      DNS["DNS · A record → LB IP"]
+      KC["Keycloak · OIDC IdP"]
+      MIRROR["Internal registry mirror<br>(air-gap: images + vendored chart)"]
+    end
+    subgraph LBG["⚖️ LoadBalancer (pick one per cluster)"]
+      direction TB
+      METAL["MetalLB"]
+      NSX["NSX ALB (Avi)"]
+      KVIP["kube-vip"]
+    end
+    subgraph NS["🟦 Namespace: traefik (any distro)"]
+      direction TB
+      TRAEFIK["Traefik<br>web :80→443 · websecure :443 TLS"]
+      subgraph RT["Traefik CRDs · routing"]
+        direction TB
+        IRD["IngressRoute<br>/dashboard · /api"]
+        MERR["Middleware<br>oauth-errors"]
+        MAUTH["Middleware<br>oauth-auth"]
+        IRO["IngressRoute<br>/oauth2/*"]
+      end
+      API["api@internal · Dashboard"]
+      O2P["oauth2-proxy · :4180"]
+      SECRET["oauth2-proxy-secret"]
+      TLS["traefik-dashboard-tls"]
+      TRAEFIK --> IRD --> MERR --> MAUTH --> API
+      TRAEFIK --> IRO --> O2P
+      MAUTH -. forwardAuth .-> O2P
+      O2P -. reads .-> SECRET
+      TRAEFIK -. TLS .-> TLS
+    end
+    BROWSER --> DNS --> LBG
+    LBG --> TRAEFIK
+    O2P -->|OIDC| KC
+    MIRROR -. "images + chart (no internet)" .-> TRAEFIK
+    MIRROR -. image .-> O2P
+    classDef ext fill:#ECEFF1,stroke:#607D8B,color:#111;
+    classDef lb fill:#B2DFDB,stroke:#00897B,color:#111;
+    classDef proxy fill:#CDEDF6,stroke:#1E8AA8,color:#111;
+    classDef crd fill:#E8E0FF,stroke:#7C4DFF,color:#111;
+    class BROWSER,DNS,KC,MIRROR ext;
+    class METAL,NSX,KVIP lb;
+    class O2P,API proxy;
+    class IRD,MERR,MAUTH,IRO crd;
+```
+
+</details>
+
+## 4. Supported platforms & presets
+
+### Platform × LoadBalancer backend
+
+What is typical, merely possible, or best avoided per platform:
+
+| Platform ↓ / LB → | `metallb` | `nsx-alb` | `kube-vip` | `generic` |
+|---|---|---|---|---|
+| **openshift** | ✅ typical (MetalLB Operator) | ⚪ if Avi/AKO present | ⚪ possible | ⚪ external/physical LB |
+| **rke2** | ✅ typical | ⚪ possible | ⚪ possible | ⚪ possible |
+| **k3s** | ✅ typical | ⚪ possible | ⚪ possible | ⚪ built-in ServiceLB (klipper) |
+| **kubeadm / generic** | ✅ typical | ⚪ possible | ⚪ possible | ⚪ possible |
+| **Tanzu / TKG (vSphere)** | ⚠️ L2 often blocked by vSphere port-group security — use BGP | ✅ typical (NSX ALB + AKO) | ✅ typical (bare-metal/edge) | ⚪ possible |
+
+✅ typical · ⚪ possible (supported, less common) · ⚠️ caveat.
+
+> **vSphere caveat** applies to **any** L2 mode (MetalLB L2, kube-vip ARP)
+> regardless of platform — including OpenShift-on-vSphere: the port group must
+> allow *Forged Transmits*, or the VIP is assigned but no traffic arrives.
+> MetalLB **BGP** mode sidesteps it. This is separate from the cluster's own
+> API/Ingress VIP (keepalived on IPI), which serves the cluster, not this Service.
+
+### Preset summary
+
+Each `sites/values-<platform>.yaml` is a small delta over the chart defaults:
+
+| Preset | `platform` | LB backend | Traefik pod UID | `caTrust.mode` | Cluster prerequisite |
+|---|---|---|---|---|---|
+| `values-openshift` | `openshift` | `metallb` | **null** (SCC injects a UID) | `openshift-injector` | MetalLB Operator + pool |
+| `values-rke2` | `rke2` | `metallb` | `65532` | `none` | Disable bundled ingress-nginx; MetalLB |
+| `values-k3s` | `k3s` | `metallb` | `65532` | `none` | Install k3s `--disable traefik`; MetalLB |
+| `values-kubeadm` | `kubeadm` | `metallb` | `65532` | `none` | PodSecurity `restricted`; MetalLB |
+| `values-tanzu-nsx` | `generic` | `nsx-alb` | `65532` | `none` | NSX ALB (Avi) + AKO |
+| `values-tanzu-kubevip` | `generic` | `kube-vip` | `65532` | `none` | kube-vip in service mode |
+
+### Why the pod UID differs
+
+OpenShift's `restricted-v2` SCC **injects** a UID from the namespace range, so the
+Traefik pod UID must be left **null** (pinning one is rejected). Every other
+distribution has no such injector, so the preset sets an explicit non-root UID
+(`65532`). The chart deletes the Traefik chart's built-in `65532` with an explicit
+null and the non-OpenShift presets add it back — see the note in
+[`values.yaml`](helm/traefik-keycloak/values.yaml). Consequence: **install with a
+preset**; a bare `helm install` with no preset fails validation on purpose.
+
+## 5. Repository layout
 
 ```
-helm/traefik-keycloak/     Umbrella chart (Traefik vendored + oauth2-proxy/dashboard)
-  values.yaml              Full catalogue of feature flags (documented)
-  charts/traefik-*.tgz     Vendored official Traefik chart (airgap)
-  templates/               oauth2-proxy, middlewares, routes, CA trust, validation
-sites/values-<platform>.yaml   Per-platform presets (the delta)
-argocd/                    GitOps: AppProject + single Application
-install.sh <platform>      Imperative install (kubectl)
-secrets/                   oauth2-proxy Secret template (out-of-band)
-docs/tls-secret.md         How to create the traefik-dashboard-tls Secret
-keycloak/                  How to create the Keycloak client + role
-metallb/                   Optional MetalLB IPAddressPool example
-PORTABILITY.md             Portability overview and what changed
+helm/traefik-keycloak/          Umbrella chart
+  Chart.yaml                    Depends on the vendored Traefik chart
+  values.yaml                   Full catalogue of feature flags (documented)
+  charts/traefik-41.0.2.tgz     Vendored official Traefik chart (air-gap)
+  templates/
+    oauth2-proxy-deployment.yaml  oauth2-proxy (keycloak-oidc provider)
+    oauth2-proxy-service.yaml
+    middlewares.yaml              oauth-auth (ForwardAuth) + oauth-errors
+    ingressroutes.yaml            /oauth2/* and /dashboard routes
+    trusted-ca-configmap.yaml     CA trust (openshift-injector / configmap)
+    oauth2-proxy-secret.yaml      rendered only when secret.mode=inline
+    validation.yaml + _validate.tpl   fail-fast combo validation
+    _helpers.tpl
+  README.md                     Chart-level reference (every flag)
+sites/values-<platform>.yaml    Per-platform presets (the delta)
+argocd/                         GitOps: AppProject + single Application
+  apps/traefik-keycloak.yaml    multi-source (vendored chart + $values preset)
+  project.yaml
+  README.md
+docs/                           tls-secret.md, air-gapped.md
+keycloak/keycloak-client-setup.md
+metallb/ipaddresspool.example.yaml
+secrets/oauth2-proxy-secret.example.yaml
+scripts/validate-mermaid.mjs    CI: parse every mermaid diagram
+install.sh <platform>           Imperative install (kubectl)
+PORTABILITY.md                  Migration notes / what changed vs OpenShift-only
 ```
 
-## Prerequisites
+## 6. Prerequisites
 
 | Requirement | Check |
 |---|---|
 | Target cluster + kubectl/oc session | `kubectl get nodes` |
 | Helm v3 CLI | `helm version` |
-| A LoadBalancer provider with an address pool | see below |
+| A LoadBalancer provider with an address pool | MetalLB / NSX ALB / kube-vip |
 | Keycloak reachable over HTTPS | open its console |
 | Permissions to create namespace + CRDs | cluster-admin or equivalent |
 | Manageable DNS for the dashboard host | points to the LoadBalancer IP |
 
-LoadBalancer per platform: MetalLB (RKE2/k3s/kubeadm/OpenShift-on-bare-metal or
-vSphere), NSX ALB / kube-vip (Tanzu). On vSphere, L2 modes need the port group to
-allow *Forged Transmits*; see `sites/values-openshift.yaml` for the full note.
+Platform-specific prerequisites (bundled-component conflicts, etc.) are listed at
+the top of each `sites/values-<platform>.yaml`.
 
-## Configuration you still do out-of-band
+## 7. Configuration
 
-1. **TLS Secret** `traefik-dashboard-tls` (Traefik terminates TLS) — see
-   `docs/tls-secret.md`.
-2. **oauth2-proxy Secret** (client + cookie secret) — copy
-   `secrets/oauth2-proxy-secret.example.yaml`, fill it, apply it. Or set
-   `secret.mode=inline` in the chart (dev only).
-3. **Keycloak client** `traefik-dashboard` (confidential, standard flow) with a
-   valid redirect URI `https://<dashboard.host>/oauth2/callback`, and a client
-   role `traefik-admin` assigned to allowed users — see
-   `keycloak/keycloak-client-setup.md`.
-4. **DNS** A record for `<dashboard.host>` → the LoadBalancer external IP.
+Set the handful of real values — inline with `--set`, or by editing a copy of the
+preset:
 
-## Troubleshooting
+| Value | What it is | Example |
+|---|---|---|
+| `dashboard.host` | Public FQDN of the dashboard | `traefik.apps.mycluster.com` |
+| `dashboard.cookieDomain` | Parent domain shared by dashboard + Keycloak | `.apps.mycluster.com` |
+| `dashboard.tlsSecretName` | Pre-created TLS Secret (Traefik terminates TLS) | `traefik-dashboard-tls` |
+| `keycloak.issuerUrl` | OIDC issuer (Keycloak 17+: `/realms/<realm>`) | `https://keycloak…/realms/myrealm` |
+| `oauth2Proxy.allowedRoles` | Role gate (`client:role` or `realm-role`) | `traefik-dashboard:traefik-admin` |
+
+Out-of-band (see the linked docs):
+- **TLS Secret** — [`docs/tls-secret.md`](docs/tls-secret.md).
+- **oauth2-proxy Secret** — [`secrets/`](secrets/) (or `secret.mode=inline` for dev).
+- **Keycloak client + `traefik-admin` role** — [`keycloak/keycloak-client-setup.md`](keycloak/keycloak-client-setup.md).
+- **DNS** A record for `dashboard.host` → LoadBalancer IP.
+
+## 8. Step-by-step install
+
+Pick **one** path.
+
+### 8.A — Imperative (Helm / kubectl)
+
+```bash
+# 1) Create the namespace + PodSecurity label, then install with your preset:
+./install.sh rke2 \
+  --set dashboard.host=traefik.apps.mycluster.com \
+  --set dashboard.cookieDomain=.apps.mycluster.com \
+  --set keycloak.issuerUrl=https://keycloak.apps.mycluster.com/realms/myrealm
+
+# (install.sh wraps: namespace + PSA label, then `helm upgrade --install` with
+#  sites/values-<platform>.yaml. The Traefik chart is vendored — no internet pull.)
+
+# 2) Read the LoadBalancer IP and create the DNS A record:
+kubectl get svc -n traefik -l app.kubernetes.io/name=traefik -o wide
+```
+
+Platforms: `openshift`, `rke2`, `k3s`, `kubeadm`, `tanzu-nsx`, `tanzu-kubevip`.
+
+### 8.B — GitOps with ArgoCD (recommended)
+
+See [`argocd/README.md`](argocd/README.md). In short: pick your preset in
+`argocd/apps/traefik-keycloak.yaml`, then:
+
+```bash
+kubectl apply -n openshift-gitops -f argocd/project.yaml          # or -n argocd
+kubectl apply -n openshift-gitops -f argocd/apps/traefik-keycloak.yaml
+```
+
+Secrets are created out-of-band first (§7) — ArgoCD does not manage them unless
+you use Sealed/External Secrets or `secret.mode=inline`.
+
+## 9. Feature-flag reference
+
+Every flag lives in [`helm/traefik-keycloak/values.yaml`](helm/traefik-keycloak/values.yaml)
+(fully commented). Summary:
+
+| Flag | Values | What it does |
+|---|---|---|
+| `platform` | `generic` `openshift` `rke2` `k3s` `kubeadm` | Distribution profile; drives pod-security expectations. Validated. |
+| `loadBalancer.backend` | `metallb` `nsx-alb` `kube-vip` `generic` | Documents/validates the LB. Annotations go in `traefik.service.annotations`. |
+| `image.registry` | `""` or host | Air-gap registry prefix for the oauth2-proxy image (`traefik.image.registry` for Traefik). |
+| `caTrust.mode` | `none` `openshift-injector` `configmap` `insecure` | How oauth2-proxy trusts the Keycloak TLS cert. |
+| `secret.mode` | `external` `inline` | Reference a pre-created Secret (default) or render one from values (dev). |
+| `dashboard.*` `keycloak.*` `oauth2Proxy.*` | — | Hostnames, OIDC issuer, role gate, replicas, resources. |
+
+### Fail-fast validation
+
+`helm install`/`helm template` runs the validation first and aborts on an
+impossible combination:
+
+- Enum checks on `platform`, `loadBalancer.backend`, `caTrust.mode`, `secret.mode`.
+- `caTrust.mode=openshift-injector` ⇒ requires `platform=openshift`.
+- `platform=openshift` ⇒ `runAsUser` must be null; `platform≠openshift` ⇒ a
+  non-root `runAsUser` must be set.
+- `secret.mode=inline` ⇒ `clientSecret` and `cookieSecret` must be set.
+- `dashboard.host` and `keycloak.issuerUrl` must be non-empty.
+
+## 10. Air-gapped / disconnected
+
+Two things must resolve without internet; both are handled — details in
+[`docs/air-gapped.md`](docs/air-gapped.md):
+
+1. **The Traefik chart is vendored** in `charts/traefik-41.0.2.tgz`, so neither
+   `helm install` nor an ArgoCD sync pulls from `traefik.github.io`.
+2. **Image registries are parameterised.** Point them at your internal mirror:
+   ```bash
+   --set image.registry=harbor.internal.example.com \
+   --set traefik.image.registry=harbor.internal.example.com
+   ```
+   Mirror `oauth2-proxy` and `traefik` into that registry beforehand.
+
+## 11. Upgrade
+
+```bash
+# Bump the vendored Traefik chart:
+helm pull traefik/traefik --version <X.Y.Z> -d helm/traefik-keycloak/charts/
+# update dependencies.version in helm/traefik-keycloak/Chart.yaml, remove the old .tgz
+
+# Re-render/lint before shipping:
+helm lint ./helm/traefik-keycloak -f sites/values-<platform>.yaml
+helm template t ./helm/traefik-keycloak -f sites/values-<platform>.yaml >/dev/null
+
+# Imperative apply:
+helm upgrade traefik ./helm/traefik-keycloak -n traefik -f sites/values-<platform>.yaml
+```
+
+Keep Traefik **≥ v3.4** (the `errors` middleware `statusRewrites` requirement).
+Under GitOps, commit the change and let ArgoCD reconcile — do not `helm`/`kubectl`
+by hand.
+
+## 12. Decommission
+
+```bash
+# Imperative:
+helm uninstall traefik -n traefik
+kubectl delete namespace traefik
+
+# GitOps: delete the Application (finalizer cascades to its resources):
+kubectl delete -n openshift-gitops application/traefik-keycloak
+```
+
+External cleanup: DNS record, Keycloak client + `traefik-admin` role, MetalLB pool
+(if dedicated), and the Traefik CRDs if you want them gone
+(`kubectl get crd | grep traefik.io`).
+
+## 13. Operations & troubleshooting
+
+```bash
+kubectl get pods,svc -n traefik
+kubectl logs -n traefik deploy/oauth2-proxy -f      # OIDC, issuer, CA, roles
+kubectl logs -n traefik deploy/traefik | grep -i error
+```
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| Blank 401 (no redirect) | Traefik < v3.4, or missing `oauth-errors` / wrong middleware order | Use Traefik ≥ v3.4; order `[oauth-errors, oauth-auth]` |
+| Blank 401 (no redirect) | Traefik < v3.4, or wrong middleware order | Traefik ≥ v3.4; order `[oauth-errors, oauth-auth]` |
 | 403 after login | User lacks the `traefik-admin` role | Assign the role in Keycloak |
-| Redirect loop | `cookieDomain` does not cover the host | Set `dashboard.cookieDomain` to the shared parent domain |
-| Invalid `redirect_uri` | Keycloak Valid redirect URI mismatch | Must be `https://<dashboard.host>/oauth2/callback` |
-| `x509: unknown authority` | oauth2-proxy does not trust the Keycloak cert | Set `caTrust.mode` (openshift-injector / configmap), or `insecure` for tests |
+| Redirect loop | `dashboard.cookieDomain` doesn't cover the host | Set it to the shared parent domain |
+| Invalid `redirect_uri` | Keycloak redirect URI mismatch | Must be `https://<dashboard.host>/oauth2/callback` |
+| `x509: unknown authority` | oauth2-proxy doesn't trust the Keycloak cert | Set `caTrust.mode` (openshift-injector / configmap), or `insecure` for tests |
 | `invalid issuer` | issuer with/without `/auth` wrong | Check `<issuer>/.well-known/openid-configuration` |
-| Service has no EXTERNAL-IP | No LB provider / pool, or blocked L2 on vSphere | Install MetalLB/NSX ALB/kube-vip; allow Forged Transmits, or use BGP |
-| Traefik pod `CreateContainerConfigError` (OpenShift) | A pinned UID conflicts with the SCC | Use `platform=openshift` (leaves UID unset); the chart validates this |
+| Service has no EXTERNAL-IP | No LB provider/pool, or blocked L2 on vSphere | Install MetalLB/NSX ALB/kube-vip; allow Forged Transmits, or use BGP |
+| Traefik pod `CreateContainerConfigError` (OpenShift) | A pinned UID conflicts with the SCC | Use `platform=openshift` (leaves UID unset) — the chart validates this |
+| `helm` aborts: "requires an explicit non-root runAsUser" | Installed with no preset | Install with a `sites/` preset |
 
-Operate the dashboard: open `https://<dashboard.host>/dashboard/` → redirect to
-Keycloak → log in with a `traefik-admin` user → back to the dashboard.
+## 14. GitOps with ArgoCD
+
+<details>
+<summary><b>Diagram — GitOps reconciliation</b> (click to expand)</summary>
+
+```mermaid
+flowchart LR
+    DEV["Edit sites/values-*.yaml<br/>commit + push"] --> REPO[("Git repo")]
+    REPO --> APP["ArgoCD Application<br/>traefik-keycloak (multi-source)"]
+    APP -->|"$values preset + vendored chart"| RENDER["helm template<br/>(chart 41.0.2)"]
+    RENDER --> SYNC["ArgoCD sync<br/>auto-sync · self-heal · prune"]
+    SYNC --> CLUSTER["namespace: traefik"]
+    PROJ["AppProject: traefik<br/>bounds repos / dest / resources"] -. scopes .-> APP
+    classDef git fill:#DDE8FF,stroke:#3B6FD4,color:#111;
+    classDef argo fill:#FFE0B2,stroke:#EF7B4D,color:#111;
+    class REPO,DEV git;
+    class APP,SYNC,PROJ argo;
+```
+
+</details>
+
+Design points (full detail in [`argocd/README.md`](argocd/README.md)):
+
+- **Single Application**, multi-source: the vendored chart is fed the platform
+  preset via the `$values` ref (a `-f` path outside the chart dir is rejected by
+  ArgoCD, so the ref pattern is used).
+- **Namespace** created and PSA-labelled via `managedNamespaceMetadata`.
+- **`ServerSideApply=true`** avoids the *"metadata.annotations: Too long"* error
+  on Traefik's large CRDs.
+- **Dedicated AppProject** bounds repos (just this one — the chart is vendored),
+  destination (`traefik` namespace) and cluster-scoped resources.
+- **Secrets** stay out of git (Sealed/External Secrets), or use `secret.mode=inline`.
+
+## 15. Contributing & license
+
+CI (`.github/workflows/ci.yml`) runs `helm lint` + `helm template`/kubeconform for
+every preset, the validation-rule checks, `yamllint`, `shellcheck`, and parses
+every mermaid diagram (`scripts/validate-mermaid.mjs`). Please keep it green.
+
+Licensed under the [MIT License](LICENSE).
+
+> **Status:** untested on a live cluster — all validation is `helm lint` /
+> `helm template` / kubeconform / mermaid parsing, not runtime.

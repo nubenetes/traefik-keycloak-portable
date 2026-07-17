@@ -209,7 +209,10 @@ traefik:
 
   log:
     level: INFO
-  accessLog: {}
+  # Access logging ON. The chart gates it on accessLog.enabled (an empty {} would
+  # leave it OFF).
+  accessLog:
+    enabled: true
 
   resources:
     requests:
