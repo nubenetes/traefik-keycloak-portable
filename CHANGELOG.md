@@ -40,7 +40,9 @@ Initial release — the multi-distribution sibling of
   and `docs/` (`tls-secret.md`, `air-gapped.md`, `external-secrets.md`,
   `network-policies.md`), including 8 collapsible, parser-validated Mermaid
   diagrams. Answers the CNI/CSI question (CSI N/A — stateless; CNI only via
-  NetworkPolicy).
+  NetworkPolicy). The architecture diagram is a **full delivery + runtime view**
+  (all components, all LB backends, ESO/Vault, air-gap mirror, GitOps) with a
+  colour **legend**.
 - **CI** (`.github/workflows/ci.yml`): `helm lint` + `helm template`/`kubeconform`
   for every preset, optional-feature render, validation-rule checks, `yamllint`,
   `shellcheck`, and mermaid parsing (`scripts/validate-mermaid.mjs`).

@@ -153,60 +153,114 @@ rows describing the same core).
 
 ## 3. Deployment topology
 
+Full picture — **delivery (GitOps) + runtime**, all components and the optional
+pieces (External Secrets/Vault, air-gap mirror, the four LB backends). Node
+colours map to the **legend** below.
+
 <details>
-<summary><b>Diagram — deployment topology (any distribution)</b> (click to expand)</summary>
+<summary><b>Diagram — full architecture (delivery + runtime, all components)</b> (click to expand)</summary>
 
 ```mermaid
 flowchart TB
-    subgraph EXT["🌐 On-prem systems (may be air-gapped)"]
+    subgraph EXT["⬜ Client · on-prem (may be air-gapped)"]
       direction TB
       BROWSER["Browser"]
       DNS["DNS · A record → LB IP"]
-      KC["Keycloak · OIDC IdP"]
-      MIRROR["Internal registry mirror<br>(air-gap: images + vendored chart)"]
     end
-    subgraph LBG["⚖️ LoadBalancer (pick one per cluster)"]
+    subgraph GIT["🔁 GitOps · ArgoCD (optional delivery)"]
+      direction TB
+      REPO[("Git repo")]
+      APP["Application: traefik-keycloak<br>vendored chart + $values preset"]
+      PROJ["AppProject: traefik"]
+      REPO --> APP
+      PROJ -. scopes .-> APP
+    end
+    subgraph LBG["🟦 LoadBalancer · pick one (loadBalancer.backend)"]
       direction TB
       METAL["MetalLB"]
       NSX["NSX ALB (Avi)"]
       KVIP["kube-vip"]
+      CIL["Cilium LB-IPAM"]
     end
-    subgraph NS["🟦 Namespace: traefik (any distro)"]
+    subgraph NS["Namespace: traefik (any distribution)"]
       direction TB
       TRAEFIK["Traefik<br>web :80→443 · websecure :443 TLS"]
-      subgraph RT["Traefik CRDs · routing"]
+      subgraph RT["🟪 Traefik CRDs · routing"]
         direction TB
-        IRD["IngressRoute<br>/dashboard · /api"]
-        MERR["Middleware<br>oauth-errors"]
-        MAUTH["Middleware<br>oauth-auth"]
-        IRO["IngressRoute<br>/oauth2/*"]
+        IRD["IngressRoute · /dashboard · /api"]
+        MERR["Middleware · oauth-errors"]
+        MAUTH["Middleware · oauth-auth"]
+        IRO["IngressRoute · /oauth2/*"]
       end
       API["api@internal · Dashboard"]
       O2P["oauth2-proxy · :4180"]
-      SECRET["oauth2-proxy-secret"]
-      TLS["traefik-dashboard-tls"]
+      subgraph ESOG["🟩 External Secrets Operator · optional"]
+        direction TB
+        SS["SecretStore → Vault"]
+        ES["ExternalSecret"]
+      end
+      subgraph SEC["🩷 Secrets · in-cluster"]
+        direction TB
+        SECRET["oauth2-proxy-secret"]
+        TLS["traefik-dashboard-tls"]
+      end
       TRAEFIK --> IRD --> MERR --> MAUTH --> API
       TRAEFIK --> IRO --> O2P
       MAUTH -. forwardAuth .-> O2P
       O2P -. reads .-> SECRET
       TRAEFIK -. TLS .-> TLS
+      SS --> ES
+      ES -->|creates| SECRET
     end
+    KC["Keycloak · OIDC IdP"]
+    VAULT[("HashiCorp Vault · KV v2")]
+    MIRROR["Internal registry mirror<br>images + vendored chart"]
     BROWSER --> DNS --> LBG
     LBG --> TRAEFIK
     O2P -->|OIDC| KC
+    VAULT -->|"Kubernetes auth"| ES
     MIRROR -. "images + chart (no internet)" .-> TRAEFIK
     MIRROR -. image .-> O2P
+    APP -. helm .-> TRAEFIK
+    EXT ~~~ GIT
     classDef ext fill:#ECEFF1,stroke:#607D8B,color:#111;
+    classDef idp fill:#F8D7DA,stroke:#C0392B,color:#111;
+    classDef vault fill:#FFF3CD,stroke:#E0A800,color:#111;
+    classDef mirror fill:#E0F2F1,stroke:#00695C,color:#111;
+    classDef gitops fill:#DDE8FF,stroke:#3B6FD4,color:#111;
     classDef lb fill:#B2DFDB,stroke:#00897B,color:#111;
-    classDef proxy fill:#CDEDF6,stroke:#1E8AA8,color:#111;
+    classDef app fill:#FFE0B2,stroke:#EF7B4D,color:#111;
     classDef crd fill:#E8E0FF,stroke:#7C4DFF,color:#111;
-    class BROWSER,DNS,KC,MIRROR ext;
-    class METAL,NSX,KVIP lb;
-    class O2P,API proxy;
+    classDef eso fill:#D7F5DD,stroke:#2E9E5B,color:#111;
+    classDef secret fill:#FCE1F0,stroke:#C2185B,color:#111;
+    class BROWSER,DNS ext;
+    class KC idp;
+    class VAULT vault;
+    class MIRROR mirror;
+    class REPO,APP,PROJ gitops;
+    class METAL,NSX,KVIP,CIL,TRAEFIK lb;
     class IRD,MERR,MAUTH,IRO crd;
+    class API,O2P app;
+    class SS,ES eso;
+    class SECRET,TLS secret;
 ```
 
 </details>
+
+**Legend**
+
+| | Group | What it covers |
+|---|---|---|
+| 🟦 | Ingress / LB | MetalLB · NSX ALB · kube-vip · Cilium · Traefik |
+| 🟪 | Traefik CRDs | IngressRoutes · middlewares (oauth-auth / oauth-errors) |
+| 🟧 | Apps | oauth2-proxy · api@internal dashboard |
+| 🟩 | External Secrets Operator | SecretStore · ExternalSecret (`secret.mode=external-secrets`) |
+| 🩷 | Secrets | oauth2-proxy-secret · traefik-dashboard-tls |
+| 🔁 | GitOps | git repo · ArgoCD Application · AppProject |
+| 🟨 | Vault | HashiCorp Vault · KV v2 (backend for ESO) |
+| 🟥 | Keycloak | OIDC IdP |
+| 🟢 | Internal mirror | image registry + vendored chart (air-gap) |
+| ⬜ | Client / DNS | browser · DNS record |
 
 ## 4. Supported platforms & presets
 
