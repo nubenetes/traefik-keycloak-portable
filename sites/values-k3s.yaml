@@ -1,0 +1,36 @@
+# =============================================================================
+# Platform preset: k3s
+# =============================================================================
+# PREREQUISITE: k3s ships its OWN Traefik. Disable it or this deployment
+# collides on ports 80/443. Install k3s with:
+#   curl -sfL https://get.k3s.io | sh -s - --disable traefik
+# (or add `disable: [traefik]` to /etc/rancher/k3s/config.yaml and restart k3s).
+#
+# k3s also bundles ServiceLB (klipper). It works, but MetalLB is recommended for
+# a predictable IP pool; if you keep ServiceLB, set loadBalancer.backend=generic.
+#
+# Install:
+#   helm install traefik ./helm/traefik-keycloak -f sites/values-k3s.yaml \
+#     --set dashboard.host=traefik.apps.mycluster.com \
+#     --set dashboard.cookieDomain=.apps.mycluster.com \
+#     --set keycloak.issuerUrl=https://keycloak.apps.mycluster.com/realms/myrealm
+# =============================================================================
+platform: k3s
+
+caTrust:
+  mode: none
+
+loadBalancer:
+  backend: metallb
+
+traefik:
+  service:
+    annotations: {}
+    # metallb.io/address-pool: traefik-pool
+
+  podSecurityContext:
+    runAsUser: 65532
+    runAsGroup: 65532
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault

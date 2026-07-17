@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-validate:
+    name: Lint & validate chart
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Helm & kubeconform
+        run: |
+          set -euo pipefail
+          curl -sfL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          helm version
+          curl -sfL "https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz" | tar -xz kubeconform
+          sudo install -m 0755 kubeconform /usr/local/bin/kubeconform
+          kubeconform -v
+
+      - name: yamllint
+        run: |
+          pip install --quiet yamllint
+          yamllint .
+
+      - name: Helm lint (every platform preset)
+        run: |
+          set -euo pipefail
+          for p in openshift rke2 k3s kubeadm tanzu-nsx tanzu-kubevip; do
+            echo "== lint $p =="
+            helm lint ./helm/traefik-keycloak -f "sites/values-$p.yaml"
+          done
+
+      - name: Helm template + kubeconform (every preset)
+        # CRDs (IngressRoute, Middleware, IPAddressPool) have no public schema
+        # -> ignore-missing-schemas.
+        run: |
+          set -euo pipefail
+          for p in openshift rke2 k3s kubeadm tanzu-nsx tanzu-kubevip; do
+            echo "== render+validate $p =="
+            helm template t ./helm/traefik-keycloak -n traefik -f "sites/values-$p.yaml" \
+              | kubeconform -ignore-missing-schemas -summary
+          done
+
+      - name: Helm validation rules (invalid combos must FAIL)
+        run: |
+          set -euo pipefail
+          # A bare install with no preset must be rejected by _validate.tpl.
+          if helm template t ./helm/traefik-keycloak -n traefik >/dev/null 2>&1; then
+            echo "ERROR: bare install should have failed validation"; exit 1
+          fi
+          # openshift-injector CA trust on a non-OpenShift platform must be rejected.
+          if helm template t ./helm/traefik-keycloak -n traefik \
+               -f sites/values-rke2.yaml --set caTrust.mode=openshift-injector >/dev/null 2>&1; then
+            echo "ERROR: openshift-injector on rke2 should have failed"; exit 1
+          fi
+          echo "validation rules OK"
+
+      - name: ShellCheck (install.sh)
+        run: shellcheck install.sh
+
+  mermaid:
+    name: Validate mermaid diagrams
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Validate diagrams
+        run: |
+          set -euo pipefail
+          npm install --no-save mermaid@11 jsdom@22
+          node scripts/validate-mermaid.mjs README.md PORTABILITY.md

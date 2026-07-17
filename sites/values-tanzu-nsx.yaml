@@ -1,0 +1,40 @@
+# =============================================================================
+# Platform preset: VMware Tanzu / TKG with NSX Advanced LB (Avi)
+# =============================================================================
+# TKG over vSphere typically uses NSX ALB (Avi) via AKO for LoadBalancer
+# Services, NOT MetalLB (L2 ARP is usually blocked by vSphere port-group
+# security). The Service just needs type=LoadBalancer; AKO provisions the VIP.
+#
+# NOTE: exact annotations are environment-specific (AKO version, whether you use
+# a dedicated vs shared VIP, an IPAM/network profile...). The block below is a
+# common starting point — confirm against your AKO config. To request a specific
+# VIP, add:  ako.vmware.com/load-balancer-ip: "10.0.0.50"  (AKO >= 1.9).
+#
+# Install:
+#   helm install traefik ./helm/traefik-keycloak -f sites/values-tanzu-nsx.yaml \
+#     --set dashboard.host=traefik.apps.mycluster.com \
+#     --set dashboard.cookieDomain=.apps.mycluster.com \
+#     --set keycloak.issuerUrl=https://keycloak.apps.mycluster.com/realms/myrealm
+# =============================================================================
+platform: generic
+
+caTrust:
+  mode: none
+
+loadBalancer:
+  backend: nsx-alb
+
+traefik:
+  service:
+    type: LoadBalancer
+    annotations: {}
+    # Environment-specific. Examples (verify against your AKO setup):
+    # ako.vmware.com/enable-shared-vip: "true"
+    # ako.vmware.com/load-balancer-ip: "10.0.0.50"
+
+  podSecurityContext:
+    runAsUser: 65532
+    runAsGroup: 65532
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault

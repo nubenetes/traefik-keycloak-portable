@@ -1,0 +1,10 @@
+apiVersion: v2
+name: traefik-keycloak
+description: Traefik + Keycloak-protected dashboard (oauth2-proxy + ForwardAuth), portable across on-prem/airgapped Kubernetes distributions via feature flags.
+type: application
+version: 0.1.0
+appVersion: "3.7.6"
+dependencies:
+  - name: traefik
+    version: 41.0.2
+    repository: ""   # vendorizado en charts/traefik-41.0.2.tgz (airgap-friendly)

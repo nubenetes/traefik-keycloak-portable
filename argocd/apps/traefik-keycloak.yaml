@@ -1,0 +1,59 @@
+# =============================================================================
+# ArgoCD Application — traefik-keycloak umbrella chart (portable, airgap-ready).
+#
+# Single git repo, multi-source so the chart (a subdirectory) and its values
+# file (elsewhere in the repo) can be combined the ArgoCD-native way:
+#   - source "values": the whole repo, exposed as $values.
+#   - source "chart":   the vendored umbrella chart at helm/traefik-keycloak,
+#                       fed the platform preset via $values/sites/...
+# The Traefik chart is bundled inside the umbrella (charts/traefik-41.0.2.tgz),
+# so there is NO pull from traefik.github.io at sync time — works airgapped.
+#
+# Secrets are NOT managed here (create them out-of-band, see the chart README):
+#   - the oauth2-proxy Secret (unless the chart runs with secret.mode=inline)
+#   - the dashboard TLS Secret
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: traefik-keycloak
+  namespace: argocd            # <<< namespace where ArgoCD runs (OpenShift GitOps: openshift-gitops)
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: traefik             # dedicated AppProject (argocd/project.yaml)
+  sources:
+    # 1) The repo, referenced as $values by the chart source below.
+    - repoURL: https://github.com/CHANGEME/traefik-keycloak.git   # <<< CHANGE to your repo
+      targetRevision: main                                        # <<< branch or tag
+      ref: values
+    # 2) The vendored umbrella chart, fed the platform preset from $values.
+    - repoURL: https://github.com/CHANGEME/traefik-keycloak.git   # <<< same repo
+      targetRevision: main
+      path: helm/traefik-keycloak
+      helm:
+        valueFiles:
+          - $values/sites/values-rke2.yaml       # <<< pick your platform preset
+        # Override the real values here (or edit a committed copy of the preset):
+        # parameters:
+        #   - name: dashboard.host
+        #     value: traefik.apps.mycluster.com
+        #   - name: dashboard.cookieDomain
+        #     value: .apps.mycluster.com
+        #   - name: keycloak.issuerUrl
+        #     value: https://keycloak.apps.mycluster.com/realms/myrealm
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: traefik
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    managedNamespaceMetadata:
+      labels:
+        pod-security.kubernetes.io/enforce: restricted
+    syncOptions:
+      - CreateNamespace=true
+      # Server-Side Apply: avoids "metadata.annotations: Too long" on Traefik's
+      # large CRDs (client-side last-applied-configuration limit).
+      - ServerSideApply=true

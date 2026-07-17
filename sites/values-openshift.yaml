@@ -1,0 +1,45 @@
+# =============================================================================
+# Platform preset: OpenShift 4.x
+# =============================================================================
+# Install:
+#   helm install traefik ./helm/traefik-keycloak -f sites/values-openshift.yaml \
+#     --set dashboard.host=traefik.apps.mycluster.com \
+#     --set dashboard.cookieDomain=.apps.mycluster.com \
+#     --set keycloak.issuerUrl=https://keycloak.apps.mycluster.com/realms/myrealm
+#
+# Only the OpenShift-specific delta lives here; everything else comes from the
+# chart's values.yaml. Edit the hostnames/realm above or in a copy of this file.
+# =============================================================================
+platform: openshift
+
+# OpenShift Route in front of Keycloak uses the cluster CA — trust it via the
+# auto-injected bundle. Requires no manual PEM.
+caTrust:
+  mode: openshift-injector
+
+loadBalancer:
+  backend: metallb
+
+# --- vSphere note -----------------------------------------------------------
+# OpenShift on vSphere has NO native LoadBalancer provider (unlike AWS/Azure/GCP),
+# so a Service type=LoadBalancer needs MetalLB / kube-vip / NSX ALB just like
+# bare metal. This is orthogonal to platform=openshift: switch loadBalancer.backend
+# and traefik.service.annotations freely (e.g. backend: nsx-alb if Avi/AKO is
+# present, or backend: kube-vip).
+#   CAVEAT for L2 modes (MetalLB L2, kube-vip ARP): the vSphere port group must
+#   allow "Forged Transmits" (and often MAC changes). If the network team blocks
+#   them, the VIP is assigned but traffic never arrives. MetalLB BGP mode avoids it.
+# Do NOT confuse this Service LB with the cluster's own API/Ingress VIP
+# (keepalived on IPI) — that serves the cluster and Routes, not this Service.
+
+traefik:
+  service:
+    annotations: {}
+    # If you have several MetalLB pools, pin one:
+    # metallb.io/address-pool: traefik-pool
+
+  # CRITICAL: do NOT pin the pod UID on OpenShift. The restricted-v2 SCC assigns
+  # a UID from the namespace range; pinning one is rejected. This preset simply
+  # inherits the chart default (runAsUser/runAsGroup = null), which deletes the
+  # Traefik chart's built-in 65532. runAsNonRoot + seccomp stay SCC-compatible.
+  # (Do not add runAsUser here: a preset-level null does not reach the subchart.)

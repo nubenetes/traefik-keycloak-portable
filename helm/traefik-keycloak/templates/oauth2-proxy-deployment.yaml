@@ -1,0 +1,127 @@
+{{- $caMount := eq (include "tk.caTrust.mounts" .) "true" -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oauth2-proxy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: oauth2-proxy
+    {{- include "tk.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.oauth2Proxy.replicas }}
+  selector:
+    matchLabels:
+      app: oauth2-proxy
+  template:
+    metadata:
+      labels:
+        app: oauth2-proxy
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: oauth2-proxy
+          image: {{ include "tk.oauth2ProxyImage" . | quote }}
+          args:
+            - --http-address=0.0.0.0:4180
+          env:
+            # ---- Keycloak (OIDC) provider ----------------------------------
+            - name: OAUTH2_PROXY_PROVIDER
+              value: "keycloak-oidc"
+            - name: OAUTH2_PROXY_OIDC_ISSUER_URL
+              value: {{ .Values.keycloak.issuerUrl | quote }}
+            - name: OAUTH2_PROXY_SCOPE
+              value: "openid email profile"
+            - name: OAUTH2_PROXY_EMAIL_DOMAINS
+              value: "*"
+            # ---- URLs / cookies --------------------------------------------
+            - name: OAUTH2_PROXY_REDIRECT_URL
+              value: {{ printf "https://%s/oauth2/callback" .Values.dashboard.host | quote }}
+            - name: OAUTH2_PROXY_COOKIE_DOMAINS
+              value: {{ .Values.dashboard.cookieDomain | quote }}
+            - name: OAUTH2_PROXY_WHITELIST_DOMAINS
+              value: {{ .Values.dashboard.cookieDomain | quote }}
+            - name: OAUTH2_PROXY_COOKIE_SECURE
+              value: "true"
+            - name: OAUTH2_PROXY_COOKIE_SAMESITE
+              value: "lax"
+            # ---- ForwardAuth mode ------------------------------------------
+            - name: OAUTH2_PROXY_REVERSE_PROXY
+              value: "true"
+            - name: OAUTH2_PROXY_SET_XAUTHREQUEST
+              value: "true"
+            - name: OAUTH2_PROXY_PASS_ACCESS_TOKEN
+              value: "true"
+            - name: OAUTH2_PROXY_SET_AUTHORIZATION_HEADER
+              value: "true"
+            - name: OAUTH2_PROXY_SKIP_PROVIDER_BUTTON
+              value: "true"
+            - name: OAUTH2_PROXY_UPSTREAMS
+              value: "static://202"
+            # ---- Role gate --------------------------------------------------
+            - name: OAUTH2_PROXY_ALLOWED_ROLES
+              value: {{ .Values.oauth2Proxy.allowedRoles | quote }}
+            # ---- Keycloak certificate trust --------------------------------
+            {{- if $caMount }}
+            - name: OAUTH2_PROXY_PROVIDER_CA_FILES
+              value: "/etc/ssl/certs/ca-bundle.crt"
+            {{- else if eq .Values.caTrust.mode "insecure" }}
+            - name: OAUTH2_PROXY_SSL_INSECURE_SKIP_VERIFY
+              value: "true"
+            {{- end }}
+            # ---- Secrets (from the oauth2-proxy Secret) --------------------
+            - name: OAUTH2_PROXY_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secret.name }}
+                  key: OAUTH2_PROXY_CLIENT_ID
+            - name: OAUTH2_PROXY_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secret.name }}
+                  key: OAUTH2_PROXY_CLIENT_SECRET
+            - name: OAUTH2_PROXY_COOKIE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secret.name }}
+                  key: OAUTH2_PROXY_COOKIE_SECRET
+          ports:
+            - name: http
+              containerPort: 4180
+          {{- if $caMount }}
+          volumeMounts:
+            - name: trusted-ca
+              mountPath: /etc/ssl/certs
+              readOnly: true
+          {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: 4180
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: 4180
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            {{- toYaml .Values.oauth2Proxy.resources | nindent 12 }}
+      {{- if $caMount }}
+      volumes:
+        - name: trusted-ca
+          configMap:
+            name: {{ .Values.caTrust.configMapName }}
+            items:
+              - key: ca-bundle.crt
+                path: ca-bundle.crt
+      {{- end }}

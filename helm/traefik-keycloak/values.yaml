@@ -1,0 +1,219 @@
+# =============================================================================
+# traefik-keycloak — umbrella chart values
+# =============================================================================
+# Traefik (official chart, vendored) + a Keycloak-protected dashboard
+# (oauth2-proxy + ForwardAuth), portable across on-prem / airgapped Kubernetes
+# distributions through the feature flags below.
+#
+# HOW TO USE
+#   1. Pick a platform preset from ../sites/  (e.g. sites/values-openshift.yaml).
+#   2. Override only the real values (hostnames, realm, registry, secrets).
+#   3. Install:
+#        helm install traefik ./helm/traefik-keycloak -f sites/values-<platform>.yaml
+#
+# This file is the FULL catalogue of every knob with portable ("generic")
+# defaults. The preset files under sites/ carry only the per-platform delta.
+#
+# WHY A TWO-LAYER LAYOUT (read this once, it explains the whole design):
+#   Helm cannot template a subchart's values. Everything Traefik itself consumes
+#   (pod UID, Service annotations, image registry) therefore lives under the
+#   `traefik:` key as plain data — set here and in the presets, not computed.
+#   Everything THIS chart renders (oauth2-proxy, middlewares, routes, CA trust)
+#   is driven by the top-level flags. `templates/_validate.tpl` cross-checks the
+#   two layers and fails fast on an inconsistent combination, so a wrong mix is
+#   caught at `helm template` time instead of as a broken pod.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# platform — selects the distribution profile. Drives pod-security expectations
+# and which CA-trust default makes sense. Enforced by _validate.tpl.
+#   generic   Any CNCF-conformant cluster with PodSecurity 'restricted' enforced
+#             (kubeadm, vanilla). Pods run as an explicit non-root UID.
+#   openshift OpenShift 4.x. The SCC injects a per-namespace UID, so the Traefik
+#             pod UID MUST be left unset (see traefik.podSecurityContext below).
+#   rke2      Rancher RKE2. Like generic; remember to disable the bundled
+#             ingress-nginx at cluster install so it does not fight for 80/443.
+#   k3s       k3s. Like generic; k3s ships its OWN Traefik — disable it
+#             (`--disable traefik`) or this deployment collides on 80/443.
+#   kubeadm   Vanilla kubeadm. Same profile as generic.
+platform: generic
+
+# -----------------------------------------------------------------------------
+# loadBalancer — how the Traefik Service of type LoadBalancer gets an address.
+# The `backend` value is validated and documented; the actual annotations it
+# implies are written into `traefik.service.annotations` (below) by each preset,
+# because only the subchart can consume them.
+loadBalancer:
+  # metallb | nsx-alb | kube-vip | generic
+  #   metallb    MetalLB (L2 or BGP). Common on RKE2/k3s/kubeadm/bare-metal.
+  #   nsx-alb    VMware NSX Advanced LB (Avi). Typical on Tanzu/TKG over vSphere.
+  #   kube-vip   kube-vip in service mode. Bare-metal / edge Tanzu and others.
+  #   generic    Any other LB controller — you supply the annotations yourself.
+  backend: metallb
+
+# -----------------------------------------------------------------------------
+# image.registry — global registry prefix for AIRGAP mirrors. Applied to the
+# oauth2-proxy image below. The Traefik image is set separately under
+# `traefik.image.registry` (subchart value). Leave empty to pull from the
+# original public registries.
+#   e.g. "harbor.internal.example.com" -> harbor.internal.example.com/oauth2-proxy/oauth2-proxy:v7.7.1
+image:
+  registry: ""
+
+# -----------------------------------------------------------------------------
+# dashboard — the public entry point users hit.
+dashboard:
+  host: traefik.apps.example.com        # public FQDN of the Traefik dashboard
+  cookieDomain: .apps.example.com       # parent domain shared by dashboard+keycloak
+  tlsSecretName: traefik-dashboard-tls  # pre-created TLS Secret (Traefik terminates TLS)
+
+# -----------------------------------------------------------------------------
+# keycloak — OIDC provider settings.
+keycloak:
+  # Full OIDC issuer URL. Keycloak >= 17 uses /realms/<realm>; legacy uses
+  # /auth/realms/<realm>. Verify at <issuer>/.well-known/openid-configuration
+  issuerUrl: https://keycloak.apps.example.com/realms/myrealm
+
+# -----------------------------------------------------------------------------
+# oauth2Proxy — the OIDC bridge Traefik calls via ForwardAuth.
+oauth2Proxy:
+  image:
+    repository: oauth2-proxy/oauth2-proxy
+    tag: v7.7.1
+    # Registry used when image.registry (global) is empty. When image.registry
+    # is set (airgap mirror), it takes precedence over this.
+    defaultRegistry: quay.io
+  replicas: 1
+  # Client role gate. "client:role" for a CLIENT role, or just "role" for a
+  # REALM role. Only users with this role pass; others get 403 after login.
+  allowedRoles: traefik-dashboard:traefik-admin
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      memory: 128Mi
+
+# -----------------------------------------------------------------------------
+# caTrust — how oauth2-proxy trusts the Keycloak TLS certificate.
+#   none               Keycloak presents a publicly/enterprise-trusted cert. Default.
+#   openshift-injector OpenShift auto-injects the cluster CA bundle into a
+#                      labelled ConfigMap, mounted into oauth2-proxy. OpenShift ONLY.
+#   configmap          You provide the CA bundle yourself (any distro). Put the PEM
+#                      in caTrust.bundle, or pre-create the ConfigMap named below.
+#   insecure           Skip TLS verification. TESTING ONLY — never in production.
+caTrust:
+  mode: none
+  configMapName: oauth2-proxy-trusted-ca
+  # PEM bundle, used only when mode=configmap and you want the chart to create
+  # the ConfigMap. Leave empty to reference a pre-existing ConfigMap instead.
+  bundle: ""
+
+# -----------------------------------------------------------------------------
+# secret — the oauth2-proxy client & cookie secrets.
+#   external  You create the Secret out-of-band (recommended; GitOps-friendly
+#             via Sealed Secrets / External Secrets). The chart only references it.
+#   inline    The chart renders the Secret from the values below. Convenient for
+#             dev; keep these values out of public git.
+secret:
+  mode: external
+  name: oauth2-proxy-secret
+  # Used only when mode=inline:
+  clientId: traefik-dashboard
+  clientSecret: ""
+  cookieSecret: ""   # 16/24/32 bytes: openssl rand -base64 32 | tr -- '+/' '-_'
+
+# =============================================================================
+# traefik — subchart values (official Traefik chart 41.0.2 = Traefik v3.7.6).
+# Plain data, NOT templated. Presets under sites/ override the per-platform bits
+# (podSecurityContext UID, service.annotations, image.registry).
+# =============================================================================
+traefik:
+  deployment:
+    replicas: 2
+
+  service:
+    type: LoadBalancer
+    # Per-backend annotations are injected by the platform preset. Example:
+    #   MetalLB: metallb.io/address-pool: traefik-pool
+    annotations: {}
+
+  # Internal ports > 1024 so Traefik needs no root. exposedPort keeps 80/443.
+  ports:
+    web:
+      port: 8000
+      exposedPort: 80
+      http:
+        redirections:
+          entryPoint:
+            to: websecure
+            scheme: https
+            permanent: true
+    websecure:
+      port: 8443
+      exposedPort: 443
+      http:
+        tls:
+          enabled: true
+
+  # Chart ships its own UNPROTECTED dashboard IngressRoute — disable it; this
+  # chart provides the Keycloak-protected one instead.
+  ingressRoute:
+    dashboard:
+      enabled: false
+
+  api:
+    dashboard: true
+
+  providers:
+    kubernetesCRD:
+      enabled: true
+      allowCrossNamespace: false
+    kubernetesIngress:
+      enabled: true
+      allowExternalNameServices: false
+
+  # --- Pod security --------------------------------------------------------
+  # DEFAULT = null (deletes the Traefik chart's built-in runAsUser/runAsGroup
+  # 65532). This is required so OpenShift works out of the box: its restricted-v2
+  # SCC injects a per-namespace UID and pinning one is rejected.
+  #
+  # WHY null must live HERE (not in a preset): a `-f` preset cannot inject a
+  # subchart-level null — Helm deletes the key from user-values and the subchart
+  # re-inherits its own 65532. Only an explicit null in THIS file survives the
+  # subchart coalesce. Therefore NON-OpenShift presets ADD an explicit UID
+  # (they set runAsUser/runAsGroup: 65532), while the OpenShift preset leaves
+  # this null untouched.
+  #
+  # Consequence: install WITH a sites/ preset. A bare install (no preset) leaves
+  # the UID null on a non-OpenShift platform and fails validation with a clear
+  # message telling you to pick a preset.
+  podSecurityContext:
+    runAsUser: null
+    runAsGroup: null
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+
+  securityContext:
+    runAsNonRoot: true
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+
+  # Airgap: set traefik.image.registry to your mirror in the preset/override.
+  image:
+    registry: null   # null = pull from the chart default (docker.io/traefik)
+
+  log:
+    level: INFO
+  accessLog: {}
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 256Mi

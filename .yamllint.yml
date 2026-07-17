@@ -1,0 +1,17 @@
+# yamllint configuration — lenient, tuned for Helm values and Kubernetes manifests.
+extends: relaxed
+
+rules:
+  line-length: disable          # long IngressRoute match rules and comments
+  document-start: disable       # files start with a comment banner, not '---'
+  comments:
+    min-spaces-from-content: 1
+  truthy:
+    allowed-values: ["true", "false", "on", "off"]
+    check-keys: false
+
+# Helm templates are NOT valid YAML ({{ ... }}); the vendored chart is a tarball.
+ignore: |
+  helm/traefik-keycloak/templates/
+  helm/traefik-keycloak/charts/
+  rendered.yaml

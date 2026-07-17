@@ -1,0 +1,31 @@
+{{- /*
+CA bundle ConfigMap mounted into oauth2-proxy so it trusts the Keycloak cert.
+
+  caTrust.mode=openshift-injector : OpenShift auto-fills ca-bundle.crt via the
+                                    inject-trusted-cabundle label. OpenShift only.
+  caTrust.mode=configmap          : rendered only when caTrust.bundle is set;
+                                    otherwise you pre-create the ConfigMap
+                                    named caTrust.configMapName yourself.
+*/ -}}
+{{- if eq .Values.caTrust.mode "openshift-injector" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.caTrust.configMapName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    config.openshift.io/inject-trusted-cabundle: "true"
+    {{- include "tk.labels" . | nindent 4 }}
+# ca-bundle.crt is populated by OpenShift's CA-bundle injector.
+{{- else if and (eq .Values.caTrust.mode "configmap") .Values.caTrust.bundle }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.caTrust.configMapName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tk.labels" . | nindent 4 }}
+data:
+  ca-bundle.crt: |
+    {{- .Values.caTrust.bundle | nindent 4 }}
+{{- end }}

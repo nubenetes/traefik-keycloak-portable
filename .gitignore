@@ -1,0 +1,7 @@
+# Real secrets — never commit
+secrets/oauth2-proxy-secret.yaml
+tls.crt
+tls.key
+
+# Claude Code local settings
+.claude/

@@ -1,0 +1,49 @@
+{{- /*
+Public oauth2-proxy route: /oauth2/* on the SAME host as the dashboard
+(/oauth2/start, /oauth2/callback, /oauth2/sign_in, ...).
+*/ -}}
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: oauth2-proxy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tk.labels" . | nindent 4 }}
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`{{ .Values.dashboard.host }}`) && PathPrefix(`/oauth2/`)
+      kind: Rule
+      services:
+        - name: oauth2-proxy
+          port: 4180
+  tls:
+    secretName: {{ .Values.dashboard.tlsSecretName }}
+---
+{{/*
+Traefik dashboard (api@internal) protected by Keycloak.
+Middleware order matters: oauth-errors first (wraps the response to rewrite
+401->302), then oauth-auth (performs the check).
+*/}}
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: traefik-dashboard
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tk.labels" . | nindent 4 }}
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`{{ .Values.dashboard.host }}`) && (PathPrefix(`/dashboard`) || PathPrefix(`/api`))
+      kind: Rule
+      services:
+        - name: api@internal
+          kind: TraefikService
+      middlewares:
+        - name: oauth-errors
+        - name: oauth-auth
+  tls:
+    secretName: {{ .Values.dashboard.tlsSecretName }}

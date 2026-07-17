@@ -1,0 +1,44 @@
+{{- /*
+Two middlewares that together make the full auth flow:
+  oauth-auth   ForwardAuth: asks oauth2-proxy (/oauth2/auth) per request.
+               Returns 202 (authenticated) or 401.
+  oauth-errors captures that 401 and rewrites it to a 302 -> /oauth2/sign_in,
+               which redirects to the Keycloak login. Without statusRewrites the
+               browser would just see a blank 401.
+Requires Traefik >= v3.4 (statusRewrites in the errors middleware).
+*/ -}}
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oauth-auth
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tk.labels" . | nindent 4 }}
+spec:
+  forwardAuth:
+    address: http://oauth2-proxy.{{ .Release.Namespace }}.svc.cluster.local:4180/oauth2/auth
+    trustForwardHeader: true
+    authResponseHeaders:
+      - X-Auth-Request-User
+      - X-Auth-Request-Email
+      - X-Auth-Request-Access-Token
+      - Authorization
+      - Set-Cookie
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: oauth-errors
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tk.labels" . | nindent 4 }}
+spec:
+  errors:
+    status:
+      - "401-403"
+    service:
+      name: oauth2-proxy
+      port: 4180
+    query: "/oauth2/sign_in?rd={url}"
+    statusRewrites:
+      "401": 302

@@ -1,0 +1,6 @@
+{{- /*
+Runs the feature-flag validation (templates/_validate.tpl). This file has NO
+underscore prefix so Helm actually executes it; it renders to nothing on
+success and calls `fail` with an actionable message on an invalid combination.
+*/ -}}
+{{- include "tk.validate" . -}}

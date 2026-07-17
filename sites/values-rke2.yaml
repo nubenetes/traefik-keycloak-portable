@@ -1,0 +1,38 @@
+# =============================================================================
+# Platform preset: Rancher RKE2
+# =============================================================================
+# PREREQUISITE: disable RKE2's bundled ingress-nginx so it does not compete for
+# ports 80/443 and the IngressClass. At cluster install, set in the RKE2 config
+# (/etc/rancher/rke2/config.yaml):
+#   disable:
+#     - rke2-ingress-nginx
+#
+# Install:
+#   helm install traefik ./helm/traefik-keycloak -f sites/values-rke2.yaml \
+#     --set dashboard.host=traefik.apps.mycluster.com \
+#     --set dashboard.cookieDomain=.apps.mycluster.com \
+#     --set keycloak.issuerUrl=https://keycloak.apps.mycluster.com/realms/myrealm
+# =============================================================================
+platform: rke2
+
+# Keycloak cert: if it is enterprise/public-trusted leave 'none'. If self-signed,
+# switch to caTrust.mode=configmap and provide caTrust.bundle (PEM).
+caTrust:
+  mode: none
+
+loadBalancer:
+  backend: metallb
+
+traefik:
+  service:
+    annotations: {}
+    # metallb.io/address-pool: traefik-pool
+
+  # Non-OpenShift: pin an explicit non-root UID (chart default 65532 kept here
+  # for clarity). Required because RKE2 does not inject one.
+  podSecurityContext:
+    runAsUser: 65532
+    runAsGroup: 65532
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault

@@ -1,0 +1,38 @@
+# =============================================================================
+# Platform preset: VMware Tanzu / TKG (bare-metal / edge) with kube-vip
+# =============================================================================
+# For TKG deployments that use kube-vip in service mode instead of NSX ALB
+# (common on bare-metal / edge). Assumes kube-vip is already installed and
+# watching Services of type LoadBalancer, with an address pool configured
+# (kube-vip ConfigMap / IPAM).
+#
+# To request a specific VIP from the pool:
+#   --set-string 'traefik.service.annotations.kube-vip\.io/loadbalancerIPs=10.0.0.50'
+# (or add it under traefik.service.annotations in a copy of this file).
+#
+# Install:
+#   helm install traefik ./helm/traefik-keycloak -f sites/values-tanzu-kubevip.yaml \
+#     --set dashboard.host=traefik.apps.mycluster.com \
+#     --set dashboard.cookieDomain=.apps.mycluster.com \
+#     --set keycloak.issuerUrl=https://keycloak.apps.mycluster.com/realms/myrealm
+# =============================================================================
+platform: generic
+
+caTrust:
+  mode: none
+
+loadBalancer:
+  backend: kube-vip
+
+traefik:
+  service:
+    type: LoadBalancer
+    annotations: {}
+    # kube-vip.io/loadbalancerIPs: "10.0.0.50"
+
+  podSecurityContext:
+    runAsUser: 65532
+    runAsGroup: 65532
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault

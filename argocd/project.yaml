@@ -1,0 +1,44 @@
+# =============================================================================
+# ArgoCD AppProject — isolates and constrains this deployment (better than
+# project: default).
+#
+# Restricts WHICH repos, WHICH destination and WHICH cluster-scoped resources the
+# 'traefik-keycloak' Application may create. Namespaced resources stay allowed by
+# default; the point is to bound the cluster-scoped set + repos + destination.
+#
+# Must exist BEFORE the Application that references it. Apply it during bootstrap
+# (see argocd/README.md).
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: traefik
+  namespace: argocd            # <<< namespace where ArgoCD runs (OpenShift GitOps: openshift-gitops)
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: Traefik + Keycloak-protected dashboard (portable umbrella chart)
+
+  # Only this repo. The Traefik chart is vendored inside it (charts/*.tgz), so no
+  # external Helm repo (traefik.github.io) is needed anymore — key for airgap.
+  sourceRepos:
+    - https://github.com/CHANGEME/traefik-keycloak.git   # <<< CHANGE to your repo
+
+  # Only the 'traefik' namespace of this cluster.
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: traefik
+
+  # Allowed CLUSTER-scoped resources (those the Traefik chart installs plus the
+  # managed namespace). Everything else cluster-scoped is DENIED.
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+    - group: apiextensions.k8s.io
+      kind: CustomResourceDefinition
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRole
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRoleBinding
+    - group: networking.k8s.io
+      kind: IngressClass

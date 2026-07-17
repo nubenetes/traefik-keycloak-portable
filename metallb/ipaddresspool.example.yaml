@@ -1,0 +1,23 @@
+# =============================================================================
+# Example MetalLB configuration (namespace metallb-system).
+# Only if you do NOT have a pool yet. Requires the MetalLB Operator installed
+# (OperatorHub -> MetalLB Operator) and a MetalLB instance created.
+# Adjust the IP range to your network.
+# =============================================================================
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: traefik-pool
+  namespace: metallb-system
+spec:
+  addresses:
+    - 192.168.1.240-192.168.1.250      # <<< CHANGE to your range
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: traefik-l2
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+    - traefik-pool
